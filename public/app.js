@@ -27,6 +27,11 @@ function forgetPack(id) { const stored = ownedPacks(); delete stored[id]; localS
 const builtInPackIds = new Set(['dream-destinations','ultimate-food-fight','perfect-weekend']);
 let modalState = null;
 let toastTimer;
+// Viewer lives outside #app so Socket.IO updates never interrupt a zoomed photo.
+const mediaViewerRoot = document.createElement('div');
+mediaViewerRoot.id = 'media-viewer-root';
+document.body.appendChild(mediaViewerRoot);
+let viewerPreviousFocus = null;
 
 const esc = input => String(input ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[char]));
 function isVideo(item) {
@@ -38,6 +43,26 @@ function image(item, className = '', playable = false) {
   return `<img src="${esc(item.image)}" alt="${esc(item.name || '')}" loading="lazy" class="${className}">`;
 }
 function tile(item, className = 'preview-tile') { return `<div class="${className}">${image(item)}</div>`; }
+// Fullscreen media preview: no vote is sent when viewing an image or video.
+function openMediaViewer(item) {
+  if (!item?.image) return;
+  viewerPreviousFocus = document.activeElement;
+  mediaViewerRoot.innerHTML = `<div class="media-viewer" id="media-viewer-overlay" role="dialog" aria-modal="true" aria-label="${esc(item.name || 'Contender')} fullscreen">
+    <div class="media-viewer-top"><div class="media-viewer-title">${esc(item.name || 'Contender')}<span>Fullscreen preview · no vote cast</span></div>
+    <button type="button" class="media-viewer-close" data-close-media-viewer aria-label="Close fullscreen preview">✕ <span>Close</span></button></div>
+    <div class="media-viewer-stage">${image(item, 'media-viewer-asset', true)}</div>
+  </div>`;
+  document.body.classList.add('media-viewer-open');
+  mediaViewerRoot.querySelector('[data-close-media-viewer]')?.focus();
+}
+function closeMediaViewer() {
+  if (!mediaViewerRoot.firstChild) return;
+  mediaViewerRoot.innerHTML = '';
+  document.body.classList.remove('media-viewer-open');
+  if (viewerPreviousFocus?.isConnected) viewerPreviousFocus.focus();
+  viewerPreviousFocus = null;
+}
+
 function toast(message, bad = false) {
   const el = $('#toast'); el.textContent = message; el.className = `toast visible${bad ? ' error' : ''}`;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('visible'), 3400);
@@ -46,7 +71,7 @@ function route() {
   const parts = location.pathname.split('/').filter(Boolean);
   return { type: parts[0] || 'home', id: parts[1] || '' };
 }
-function navigate(url) { closeModal(); history.pushState(null, '', url); window.scrollTo(0,0); showPage(); }
+function navigate(url) { closeModal(); closeMediaViewer(); history.pushState(null, '', url); window.scrollTo(0,0); showPage(); }
 async function api(path, options) {
   const response = await fetch(path, options);
   let data;
@@ -370,18 +395,22 @@ function contenderButton(item, room, side) {
   const winner = match.revealed && match.outcome.winner.id === item.id;
   const lost = match.revealed && !winner;
   const votes = match.scores ? match.scores[side] : null;
-  // Photos and GIFs can be tapped to vote. Videos retain their playback controls
-  // without accidentally casting a vote when a user presses Play or Pause.
-  const tapToVote = !isVideo(item) && !match.revealed;
-  const mediaOpen = tapToVote
-    ? `<button type="button" class="contender-media contender-media-vote" data-vote="${esc(item.id)}" aria-label="Vote for ${esc(item.name)}">`
+  // Clicking a picture opens its fullscreen preview. Voting is always a separate button.
+  // Video playback controls remain usable; videos get their own expand icon.
+  const canExpand = Boolean(item.image);
+  const video = isVideo(item);
+  const mediaOpen = canExpand && !video
+    ? `<button type="button" class="contender-media contender-media-zoom" data-view-side="${side}" aria-label="View ${esc(item.name)} fullscreen" title="View fullscreen">`
     : '<div class="contender-media">';
-  const mediaClose = tapToVote ? '</button>' : '</div>';
+  const mediaClose = canExpand && !video ? '</button>' : '</div>';
+  const expandHint = canExpand
+    ? video ? `<button type="button" class="media-expand-hint media-expand-hint-video" data-view-side="${side}" aria-label="View ${esc(item.name)} fullscreen" title="View fullscreen">⛶ <span>Expand</span></button>` : `<span class="media-expand-hint" aria-hidden="true">⛶ <span>Expand</span></span>`
+    : '';
   return `<div class="contender ${picked ? 'picked' : ''} ${winner ? 'winner' : ''} ${lost ? 'loser' : ''}">
   ${picked ? '<span class="selected-mark">✓ YOUR PICK</span>' : ''}
-  ${mediaOpen}${image(item, '', true)}${mediaClose}
+  ${mediaOpen}${image(item, '', true)}${expandHint}${mediaClose}
   <div class="contender-footer"><strong>${esc(item.name)}</strong>
-  <span>${match.revealed ? `${votes} vote${votes === 1 ? '' : 's'} ${winner ? '· 🏆 WINS' : ''}` : picked ? 'You voted for this contender' : tapToVote ? 'Tap the photo to vote' : 'Watch the clip or make your choice'}</span>
+  <span>${match.revealed ? `${votes} vote${votes === 1 ? '' : 's'} ${winner ? '· 🏆 WINS' : ''}` : picked ? 'You voted for this contender' : canExpand ? 'Click the image to expand · Vote below' : 'Make your choice below'}</span>
   <button type="button" class="button ${picked ? 'button-primary' : 'button-secondary'} vote-pick" data-vote="${esc(item.id)}" ${match.revealed ? 'disabled' : ''}>${match.revealed ? winner ? '🏆 Winner' : 'Eliminated' : picked ? '✓ Selected' : 'Vote for this →'}</button></div></div>`;
 }
 function gameHtml(room) {
@@ -395,7 +424,7 @@ function gameHtml(room) {
   <div class="progress-row"><span>${label} · MATCH ${room.matchIndex + 1}/${room.roundMatchCount}</span><span>${room.completed} / ${room.totalMatches} MATCHES COMPLETE</span></div>
   <div class="progress-track"><div class="progress-fill" style="width:${Math.round((room.completed / Math.max(1,room.totalMatches)) * 100)}%"></div></div>
   <div class="game-prompt"><span class="eyebrow">${match.revealed ? '🏆 THE PEOPLE HAVE SPOKEN' : '⚔ FACE-OFF'}</span>
-  <h2>${match.revealed ? 'And the winner is…' : 'Who gets your vote?'}</h2><p>${match.revealed ? esc(match.outcome.tiebreak || 'Moving one step closer to the crown.') : 'Tap your favourite contender below. You can change your vote until reveal.'}</p></div>
+  <h2>${match.revealed ? 'And the winner is…' : 'Who gets your vote?'}</h2><p>${match.revealed ? esc(match.outcome.tiebreak || 'Moving one step closer to the crown.') : 'Click an image to view fullscreen, or use Vote below to choose. You can change your vote until reveal.'}</p></div>
   <div class="versus-grid">${contenderButton(match.a, room, 'a')}${contenderButton(match.b, room, 'b')}<div class="versus-badge">VS</div></div>
   ${match.revealed ? `<div class="reveal-banner">✳ <span>${esc(match.outcome.winner.name)}</span> advances to the next round!</div>` : ''}
   <div class="action-row">${isHost ? match.revealed
@@ -518,6 +547,15 @@ async function modalSubmit(ev) {
 
 // Delegation: the page is re-rendered every time the room state changes.
 document.addEventListener('click', event => {
+  if (event.target.closest('[data-close-media-viewer]') || event.target.id === 'media-viewer-overlay' || event.target.classList.contains('media-viewer-stage') || event.target.matches?.('.media-viewer-stage img')) {
+    closeMediaViewer(); return;
+  }
+  const view = event.target.closest('[data-view-side]');
+  if (view) {
+    const item = state.room?.match?.[view.dataset.viewSide];
+    if (route().type === 'room' && item) openMediaViewer(item);
+    return;
+  }
   const link = event.target.closest('a[data-link]');
   if (link) { event.preventDefault(); navigate(link.getAttribute('href')); return; }
   if (event.target.closest('[data-modal-close]') || event.target.id === 'modal-backdrop') { closeModal(); return; }
@@ -610,7 +648,10 @@ document.addEventListener('change', event => {
 document.addEventListener('submit', event => { if (event.target.id === 'modal-form') modalSubmit(event); });
 $('#join-top').addEventListener('click', () => openModal({ type: 'join' }));
 $('#name-chip').addEventListener('click', () => openModal({ type: 'name', title: 'Your player nickname', caption: 'Set the name everyone sees when you join games.' }));
-window.addEventListener('popstate', showPage);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') closeMediaViewer();
+});
+window.addEventListener('popstate', () => { closeMediaViewer(); showPage(); });
 socket.on('draft:state', draft => {
   if (route().type === 'studio' && route().id.toUpperCase() === draft.code) {
     const published = draft.status === 'published' && state.draft?.status !== 'published';
