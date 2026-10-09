@@ -155,3 +155,44 @@
   object-position: center;
   display: block;
 }
+
+/* No-crop media in every contender view (voting, pack details, pack creator,
+   shared studios and the champion screen). This overrides older cover rules. */
+.page-game .contender-media,
+.champion-card .contender-media,
+.preview-tile,
+.entry-thumb,
+.pack-cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  background: #16111f;
+}
+
+.page-game .contender-media img,
+.page-game .contender-media video,
+.champion-card .contender-media img,
+.champion-card .contender-media video,
+.preview-tile img,
+.preview-tile video,
+.entry-thumb img,
+.entry-thumb video,
+.pack-cover img,
+.pack-cover video {
+  display: block;
+  flex: 0 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  transform: none;
+}
+
+/* Older hover zoom made even fully fitted pack covers look cropped. */
+.pack-card:hover .pack-cover img { transform: none; }

@@ -1,16 +1,21 @@
-DUEL CLUB — FULL IMAGE VOTING UPDATE
+Duel Club - show the whole photo without cropping
 
-What changed:
-- The two big contender cards remain side-by-side at roughly 50% width each.
-- Photos, GIFs, and videos fit entirely inside their card instead of being cropped.
-- Depending on aspect ratio, empty space will appear around the media. This is intentional.
-- All pack features, voting logic, and video controls remain unchanged.
+This patch changes only public/styles.css.
+It leaves the wide, side-by-side voting layout, functionality, media uploads,
+256 contenders, collaborative studios, and delete permissions unchanged.
 
-HOW TO UPDATE YOUR RENDER SITE
-1. Unzip this archive.
-2. In https://github.com/lowerx/Duel-Club open the public folder.
-3. Replace public/styles.css with the one from this archive.
-4. Commit the change to the main branch.
-5. Allow Render to redeploy, then hard-refresh your site (Cmd + Shift + R).
+Install in GitHub:
+1. Open https://github.com/lowerx/Duel-Club
+2. Open the public folder.
+3. Replace public/styles.css with the styles.css in this ZIP.
+4. Commit to main; allow Render to redeploy.
+5. Refresh your website with Cmd+Shift+R.
 
-Only the CSS file changes. Don't replace or remove any other file.
+What changes:
+- Voting: each photo, GIF or video is entirely visible inside its half-width box.
+- Pack detail contender thumbnails and shared/solo creator preview tiles: no cropping.
+- Champion media and pack covers: no cropping.
+- Unused space may be shown as dark bars at the sides or top/bottom.
+
+If a source photo was cropped BEFORE being uploaded (e.g. the original image
+file already lacks part of a head), CSS cannot restore missing image pixels.
