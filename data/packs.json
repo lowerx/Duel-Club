@@ -1,0 +1,176 @@
+[
+  {
+    "id": "dream-destinations",
+    "title": "Dream destinations",
+    "description": "Only one place gets the plane ticket. Where are we going?",
+    "category": "Travel",
+    "author": "Duel Club",
+    "createdAt": "2026-10-09T21:48:47.939Z",
+    "items": [
+      {
+        "id": "5384475b-6da1-47ea-a887-cae07f104f99",
+        "name": "Paris",
+        "image": "https://images.unsplash.com/photo-1502602898657-3e91760cbb34?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "ca497346-c541-44c3-9700-c1298f291f5f",
+        "name": "Tokyo",
+        "image": "https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "5186e5c1-6f1c-466c-b198-f185e5528cc3",
+        "name": "New York",
+        "image": "https://images.unsplash.com/photo-1486325212027-8081e485255e?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "6748f54d-fa8d-401e-84da-89a81b636809",
+        "name": "Rome",
+        "image": "https://images.unsplash.com/photo-1552832230-c0197dd311b5?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "dc58c06d-fe65-40bd-81ed-f53afbd62c13",
+        "name": "Barcelona",
+        "image": "https://images.unsplash.com/photo-1539037116277-4db20889f2d4?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "ce7efe4f-d750-499d-b0bf-b41b518869c1",
+        "name": "Santorini",
+        "image": "https://images.unsplash.com/photo-1613395877344-13d4a8e0d49e?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "fb6ac051-5794-417c-a728-98d461de7c7b",
+        "name": "Swiss Alps",
+        "image": "https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=960&q=80",
+        "emoji": "🌍"
+      },
+      {
+        "id": "bb8994c0-c56d-478e-b70f-97c67e548c36",
+        "name": "Bali",
+        "image": "https://images.unsplash.com/photo-1537996194471-e657df975ab4?w=960&q=80",
+        "emoji": "🌍"
+      }
+    ]
+  },
+  {
+    "id": "ultimate-food-fight",
+    "title": "The ultimate food fight",
+    "description": "Settle the most important dinner debate of all time.",
+    "category": "Food",
+    "author": "Duel Club",
+    "createdAt": "2026-10-09T21:48:47.939Z",
+    "items": [
+      {
+        "id": "770c2b0e-a944-4fe2-bd6f-c68b68ca09f7",
+        "name": "Pizza",
+        "emoji": "🍕",
+        "image": ""
+      },
+      {
+        "id": "6c7ddde2-a086-47ac-bd94-c45ccf71a389",
+        "name": "Sushi",
+        "emoji": "🍣",
+        "image": ""
+      },
+      {
+        "id": "a6c925cf-c242-42cf-b890-5d1a87152ee0",
+        "name": "Burger",
+        "emoji": "🍔",
+        "image": ""
+      },
+      {
+        "id": "39fd3157-8c7a-4e47-8b78-32ee17baa3ac",
+        "name": "Tacos",
+        "emoji": "🌮",
+        "image": ""
+      },
+      {
+        "id": "e8e6fc54-0ba3-42e1-87d8-9a7c65d75b6e",
+        "name": "Pasta",
+        "emoji": "🍝",
+        "image": ""
+      },
+      {
+        "id": "816a2908-e329-438b-9993-412a1b26b297",
+        "name": "Ramen",
+        "emoji": "🍜",
+        "image": ""
+      },
+      {
+        "id": "58e1672e-3f52-4272-8db8-97194b9f3ec4",
+        "name": "Dumplings",
+        "emoji": "🥟",
+        "image": ""
+      },
+      {
+        "id": "44682ebc-216a-47c9-bf94-09bbc4ec6a43",
+        "name": "Croissant",
+        "emoji": "🥐",
+        "image": ""
+      }
+    ]
+  },
+  {
+    "id": "perfect-weekend",
+    "title": "The perfect weekend",
+    "description": "Eight plans. One undefeated way to spend a Saturday.",
+    "category": "Lifestyle",
+    "author": "Duel Club",
+    "createdAt": "2026-10-09T21:48:47.939Z",
+    "items": [
+      {
+        "id": "6044657d-545d-4d01-a98f-720f057db4b1",
+        "name": "Movie night",
+        "emoji": "🎬",
+        "image": ""
+      },
+      {
+        "id": "3069648d-a9ab-4ecf-9754-7653719ab228",
+        "name": "Beach day",
+        "emoji": "🏖️",
+        "image": ""
+      },
+      {
+        "id": "f5bb6294-2894-4c4b-9e22-f3d9db1e49a7",
+        "name": "Gaming marathon",
+        "emoji": "🎮",
+        "image": ""
+      },
+      {
+        "id": "b41eb79c-eaa0-42fd-aefc-94de0cf2e792",
+        "name": "Road trip",
+        "emoji": "🚗",
+        "image": ""
+      },
+      {
+        "id": "43299a85-32fa-42bf-89bf-62c8bbbd36bc",
+        "name": "Concert",
+        "emoji": "🎤",
+        "image": ""
+      },
+      {
+        "id": "430e5211-9cf6-4e0f-a791-2740ada06f99",
+        "name": "House party",
+        "emoji": "🪩",
+        "image": ""
+      },
+      {
+        "id": "91753081-3718-4c83-b3a2-6f7f97974f67",
+        "name": "Hiking",
+        "emoji": "🥾",
+        "image": ""
+      },
+      {
+        "id": "240a1204-0875-4980-85e9-cf114d091124",
+        "name": "Sleep all day",
+        "emoji": "😴",
+        "image": ""
+      }
+    ]
+  }
+]
