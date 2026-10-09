@@ -1,36 +1,16 @@
-DUEL CLUB — FULL-SCREEN VOTING UPDATE
-=====================================
+DUEL CLUB — FULL IMAGE VOTING UPDATE
 
-This update is based on the latest Delete Packs version and retains:
-- 256 contenders per pack
-- GIF and video support
-- Collaborative studios
-- Pack deletion and creator ownership checks
+What changed:
+- The two big contender cards remain side-by-side at roughly 50% width each.
+- Photos, GIFs, and videos fit entirely inside their card instead of being cropped.
+- Depending on aspect ratio, empty space will appear around the media. This is intentional.
+- All pack features, voting logic, and video controls remain unchanged.
 
-WHAT CHANGED
-- In a live match, both choices sit side-by-side and each takes almost
-  half the browser window width.
-- Photos and GIFs become much taller.
-- Match statistics move below the matchup so they no longer squeeze the cards.
-- Mobile screens also show two large choices side-by-side.
-- You can now click/tap photos or GIFs themselves to vote.
-  Videos remain playable without accidentally voting; use the vote button.
-
-UPDATE YOUR EXISTING GITHUB/RENDER SITE
+HOW TO UPDATE YOUR RENDER SITE
 1. Unzip this archive.
-2. Open your GitHub repository's public/ folder.
-3. Upload/replace the two files from this ZIP's public/ folder:
-      app.js
-      styles.css
-4. Commit the changes to main.
-5. Wait for Render to automatically deploy.
-6. On your site, hard refresh (Cmd + Shift + R).
+2. In https://github.com/lowerx/Duel-Club open the public folder.
+3. Replace public/styles.css with the one from this archive.
+4. Commit the change to the main branch.
+5. Allow Render to redeploy, then hard-refresh your site (Cmd + Shift + R).
 
-DO NOT replace or delete index.html, server.js, package.json,
-pack data, or any other existing file.
-
-TESTED
-- 20 automated tests passed, including creator-only deletion and 256-entry packs.
-- Layout checked at 1440px, 768px and 390px widths with a browser preview;
-  in all cases cards were equal width with no horizontal scrolling.
-- Not yet tested against your live Render deployment.
+Only the CSS file changes. Don't replace or remove any other file.
