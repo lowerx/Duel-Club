@@ -33,3 +33,105 @@
 .entry-fields select { padding:10px 12px;border-radius:9px;background:#2b233b;color:var(--text);border:1px solid #52455e; }
 @media (max-width:780px) { .studio-grid { grid-template-columns:1fr; } .studio-sidebar { position:static; } }
 @media (max-width:510px) { .studio-code { font-size:22px; } .entry-row { gap:7px; } .entry-row .entry-thumb { width:55px;min-width:55px; } .contender-footer .vote-pick { padding:9px;font-size:11px; } }
+
+/* Ownership-based pack deletion in the pack details page */
+.delete-pack-link { margin-top:13px; padding:9px 0; background:transparent; border:0; color:#fa9da4; text-decoration:underline; text-underline-offset:4px; cursor:pointer; font:inherit; font-size:12px; }
+.delete-pack-link:hover { color:#ffd5da; }
+.delete-pack-link:focus-visible { outline:2px solid #fa9da4; border-radius:4px; }
+
+
+/* Immersive, full-width voting screen: one half of the viewport per contender.
+   Scoped to active games so pack editing, lobbies and champion screens stay intact. */
+.page-game {
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(1880px, calc(100vw - 36px));
+  padding-top: 32px;
+}
+.page-game .game-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+.page-game .game-main { width: 100%; min-width: 0; }
+.page-game .progress-track { margin-bottom: 20px; }
+.page-game .game-prompt { margin-bottom: 23px; }
+.page-game .game-prompt h2 { font-size: clamp(30px, 3.8vw, 54px); }
+.page-game .versus-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(12px, 1.7vw, 28px);
+}
+.page-game .contender { min-width: 0; }
+.page-game .contender-media {
+  height: clamp(440px, 64vh, 800px);
+  height: clamp(440px, 64svh, 800px);
+}
+.page-game .contender-media img,
+.page-game .contender-media video { width: 100%; height: 100%; }
+.page-game .contender-footer { min-height: 120px; padding: 16px 20px; }
+.page-game .contender-footer strong {
+  font-size: clamp(20px, 2.25vw, 32px);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.page-game .contender-footer .vote-pick { max-width: 280px; }
+.page-game .versus-badge {
+  top: 42%;
+  width: 84px;
+  height: 84px;
+  font-size: 27px;
+}
+.page-game .game-sidebar {
+  order: initial;
+  width: min(100%, 960px);
+  margin: 0 auto;
+}
+@media (max-width: 900px) {
+  .page-game { width: calc(100vw - 28px); }
+  .page-game .contender-media {
+    height: clamp(300px, 55vh, 640px);
+    height: clamp(300px, 55svh, 640px);
+  }
+}
+@media (max-width: 510px) {
+  .page-game {
+    width: 100%;
+    left: auto;
+    transform: none;
+    padding-top: 26px;
+  }
+  .page-game .versus-grid { gap: 7px; }
+  .page-game .contender-media {
+    height: clamp(260px, 53vh, 470px);
+    height: clamp(260px, 53svh, 470px);
+  }
+  .page-game .contender-footer { min-height: 116px; padding: 10px 6px; gap: 5px; }
+  .page-game .contender-footer strong { font-size: 15px; }
+  .page-game .contender-footer span { font-size: 10px; }
+  .page-game .contender-footer .vote-pick { padding: 9px 5px; font-size: 11px; }
+  .page-game .versus-badge {
+    width: 48px;
+    height: 48px;
+    top: 38%;
+    font-size: 16px;
+    border-width: 4px;
+  }
+  .page-game .game-prompt h2 { font-size: clamp(27px, 7vw, 36px); }
+}
+
+/* Voting photos is optional: video controls never trigger a vote. */
+.page-game .contender-media-vote {
+  display: grid;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.page-game .contender-media-vote:focus-visible {
+  outline: 4px solid var(--lime);
+  outline-offset: -4px;
+}
+.page-game .contender-media-vote:hover img { filter: brightness(1.05); }

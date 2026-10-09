@@ -56,7 +56,20 @@ function publicPack(pack, { full = false } = {}) {
   return { id, title, description, category, author, createdAt, itemCount: items.length,
     items: full ? items : items.slice(0, 4) };
 }
+// Creator keys are private capabilities; only the hash is saved with each pack.
+function makeOwnerKey() { return crypto.randomBytes(32).toString('hex'); }
+function keyDigest(value) { return crypto.createHash('sha256').update(value).digest(); }
+function secureKeyMatch(provided, expectedHash) {
+  if (typeof provided !== 'string' || !/^[a-f0-9]{64}$/.test(provided) || !/^[a-f0-9]{64}$/.test(expectedHash || '')) return false;
+  return crypto.timingSafeEqual(keyDigest(provided), Buffer.from(expectedHash, 'hex'));
+}
+function adminKeyMatch(provided) {
+  const expected = process.env.PACK_ADMIN_KEY || '';
+  if (typeof provided !== 'string' || expected.length < 16 || provided.length !== expected.length) return false;
+  return crypto.timingSafeEqual(keyDigest(provided), keyDigest(expected));
+}
 function safeString(value, max = 100) { return String(value ?? '').trim().slice(0, max); }
+const MAX_PACK_ITEMS = 256;
 function safeMedia(value) {
   const s = safeString(value, 1000);
   if (!s) return '';
@@ -74,7 +87,7 @@ function cleanItem(item, id = crypto.randomUUID()) {
 }
 function validatePack(title, items) {
   if (title.length < 3) return 'Give your pack a title (at least 3 characters).';
-  if (!Array.isArray(items) || items.length < 2 || items.length > 64) return 'Packs need between 2 and 64 contenders.';
+  if (!Array.isArray(items) || items.length < 2 || items.length > MAX_PACK_ITEMS) return `Packs need between 2 and ${MAX_PACK_ITEMS} contenders.`;
   if (items.some(item => !item.name)) return 'Every contender needs a name.';
   return '';
 }
@@ -111,10 +124,43 @@ app.post('/api/packs', (req, res) => {
   const items = Array.isArray(body.items) ? body.items.map(item => cleanItem(item)) : [];
   const validation = validatePack(title, items);
   if (validation) return res.status(400).json({ error: validation });
-  const pack = { id: crypto.randomUUID(), title, description, category, author, createdAt: new Date().toISOString(), items };
+  const ownerKey = makeOwnerKey();
+  const pack = { id: crypto.randomUUID(), title, description, category, author, createdAt: new Date().toISOString(), items, ownerKeyHash: keyDigest(ownerKey).toString('hex') };
   packs.push(pack);
   savePacks();
-  res.status(201).json(publicPack(pack, { full: true }));
+  // The key is returned ONLY on creation, never via public pack listings or detail routes.
+  res.status(201).json({ ...publicPack(pack, { full: true }), ownerKey });
+});
+
+app.delete('/api/packs/:id', (req, res) => {
+  const index = packs.findIndex(pack => pack.id === req.params.id);
+  if (index < 0) return res.status(404).json({ error: 'Pack not found or already deleted.' });
+  const pack = packs[index];
+  // No authentication by nickname, author string, or guessable public pack ID.
+  const ownerKey = req.body?.ownerKey;
+  const adminKey = req.body?.adminKey;
+  const owned = secureKeyMatch(ownerKey, pack.ownerKeyHash);
+  if (!owned && !adminKeyMatch(adminKey)) return res.status(403).json({
+    error: pack.ownerKeyHash
+      ? 'This pack belongs to another browser. Use its original creator browser or the admin delete key.'
+      : 'Older packs require the admin delete key from your Render environment (PACK_ADMIN_KEY).'
+  });
+  if ([...rooms.values()].some(room => room.packId === pack.id && ['lobby', 'playing'].includes(room.status))) {
+    return res.status(409).json({ error: 'This pack is being used in an active game room. Finish the game before deleting it.' });
+  }
+  packs.splice(index, 1);
+  savePacks();
+  // Published studios may still be open in other tabs; update their status.
+  for (const draft of drafts.values()) {
+    if (draft.packId === pack.id) {
+      draft.status = 'deleted';
+      draft.packId = null;
+      broadcastDraft(draft);
+    }
+  }
+  saveDrafts();
+  // Media uploads remain untouched: the same URL may be used in another pack/draft.
+  res.json({ ok: true, id: pack.id });
 });
 
 const allowedMime = {
@@ -318,7 +364,7 @@ io.on('connection', socket => {
   socket.on('draft:add', (data, ack) => {
     const draft = studioFor(socket);
     if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
-    if (draft.items.length >= 64) return error(ack, 'A pack can have at most 64 contenders.');
+    if (draft.items.length >= MAX_PACK_ITEMS) return error(ack, `A pack can have at most ${MAX_PACK_ITEMS} contenders.`);
     const entry = cleanItem(data?.item);
     if (!entry.name) return error(ack, 'Every contender needs a name.');
     entry.addedBy = socket.data.playerId;
@@ -355,12 +401,13 @@ io.on('connection', socket => {
     const items = draft.items.map(item => cleanItem(item));
     const validation = validatePack(draft.title, items);
     if (validation) return error(ack, validation);
+    const ownerKey = makeOwnerKey();
     const pack = { id: crypto.randomUUID(), title: draft.title, description: draft.description,
       category: draft.category, author: draft.editors.get(draft.hostId)?.name || 'Duel Club',
-      createdAt: new Date().toISOString(), items };
+      createdAt: new Date().toISOString(), items, ownerKeyHash: keyDigest(ownerKey).toString('hex') };
     packs.push(pack); savePacks();
     draft.packId = pack.id; draft.status = 'published'; saveDrafts();
-    reply(ack, { ok: true, packId: pack.id }); broadcastDraft(draft);
+    reply(ack, { ok: true, packId: pack.id, ownerKey }); broadcastDraft(draft);
   });
   socket.on('room:create', (data, ack) => {
     const pack = packs.find(p => p.id === data?.packId);

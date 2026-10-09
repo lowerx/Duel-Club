@@ -3,6 +3,7 @@ const $ = selector => document.querySelector(selector);
 const app = $('#app');
 const modalRoot = $('#modal-root');
 const socket = io({ reconnection: true });
+const MAX_PACK_ITEMS = 256;
 const CATEGORIES = ['Other', 'Entertainment', 'Music', 'Gaming', 'Sports', 'Food', 'Travel', 'Lifestyle', 'People', 'Movies', 'Anime'];
 const state = {
   name: localStorage.getItem('duelclub:name') || '',
@@ -11,6 +12,19 @@ const state = {
   builder: null, uploading: 0, saving: false, draft: null, studioUploading: 0
 };
 localStorage.setItem('duelclub:playerId', state.playerId);
+// Deletion permission stays in this browser, never in a public URL or nickname.
+const OWNED_PACKS_KEY = 'duelclub:ownedPacks';
+function ownedPacks() {
+  try { const v = JSON.parse(localStorage.getItem(OWNED_PACKS_KEY) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+  catch { return {}; }
+}
+function packOwnerKey(id) { return ownedPacks()[id] || ''; }
+function rememberPack(id, ownerKey) {
+  if (!id || !/^[a-f0-9]{64}$/.test(ownerKey || '')) return;
+  localStorage.setItem(OWNED_PACKS_KEY, JSON.stringify({ ...ownedPacks(), [id]:ownerKey }));
+}
+function forgetPack(id) { const stored = ownedPacks(); delete stored[id]; localStorage.setItem(OWNED_PACKS_KEY, JSON.stringify(stored)); }
+const builtInPackIds = new Set(['dream-destinations','ultimate-food-fight','perfect-weekend']);
 let modalState = null;
 let toastTimer;
 
@@ -123,7 +137,9 @@ function renderPack(pack) {
   <div class="detail-copy"><span class="eyebrow">✳ ${esc(pack.category.toUpperCase())} · WORLD CUP BRACKET</span><h1>${esc(pack.title)}<span class="decor-line">✳</span></h1>
   <p class="lead">${esc(pack.description || 'Time to discover your ultimate favourite!')}</p><div class="detail-chips"><span>👤 Made by ${esc(pack.author)}</span><span>⚔ ${pack.itemCount} contenders</span><span>👥 Up to 30 friends</span></div>
   <div class="hero-actions"><button class="button button-primary button-large" data-action="host" data-id="${esc(pack.id)}">✳ Host a room ↗</button>
-  <button class="button button-secondary button-large" data-action="join">Join a room</button></div><p class="sidebar-caption">Play with friends in real time, or start alone. Sharing a link is all it takes.</p></div></div>
+  <button class="button button-secondary button-large" data-action="join">Join a room</button></div><p class="sidebar-caption">Play with friends in real time, or start alone. Sharing a link is all it takes.</p>
+  ${packOwnerKey(pack.id) ? `<button type="button" class="delete-pack-link" data-action="delete-pack" data-id="${esc(pack.id)}">🗑 Delete my pack</button>` : !builtInPackIds.has(pack.id) ? `<button type="button" class="delete-pack-link" data-action="delete-legacy-pack" data-id="${esc(pack.id)}">Delete older pack (admin key)</button>` : ''}
+  </div></div>
   <div class="section-divider"></div><h2 class="detail-item-label">Meet the contenders <span class="subhead">(${pack.itemCount})</span></h2>
   <div class="detail-items">${pack.items.map(item => `<div class="detail-item">${tile(item)}<strong>${esc(item.name)}</strong></div>`).join('')}</div></div>`;
 }
@@ -140,7 +156,7 @@ function renderBuilder() {
   <div class="field"><label for="pack-title">Pack name *</label><input id="pack-title" data-form-field="title" maxlength="70" placeholder="e.g. Most iconic movie characters" value="${esc(b.title)}"></div>
   <div class="field"><label for="pack-description">Description</label><textarea id="pack-description" data-form-field="description" maxlength="240" placeholder="What's everyone voting on?">${esc(b.description)}</textarea></div>
   <div class="field"><label for="pack-category">Category</label><select id="pack-category" data-form-field="category">${CATEGORIES.map(cat => `<option ${cat === b.category ? 'selected' : ''}>${esc(cat)}</option>`).join('')}</select></div>
-  <div class="section-divider"></div><div class="entry-head"><div><h3>02 / The contenders <span style="color:var(--lime)">${b.items.length}/64</span></h3><p>At least 2 choices. Add photos, animated GIFs, videos, or direct media links.</p></div></div>
+  <div class="section-divider"></div><div class="entry-head"><div><h3>02 / The contenders <span style="color:var(--lime)">${b.items.length}/${MAX_PACK_ITEMS}</span></h3><p>At least 2 choices. Add photos, animated GIFs, videos, or direct media links.</p></div></div>
   <div class="entries-list">${b.items.map((item, index) => `<div class="entry-row"><span class="entry-number">${index + 1}</span>${tile(item, 'entry-thumb')}
   <div class="entry-fields"><input aria-label="Contender name ${index + 1}" data-entry="${esc(item.key)}" data-entry-field="name" maxlength="60" placeholder="Contender name" value="${esc(item.name)}">
   <input aria-label="Media URL ${index + 1}" data-entry="${esc(item.key)}" data-entry-field="image" placeholder="Paste image / GIF / video URL" value="${esc(item.image)}"><select aria-label="Media type ${index + 1}" data-entry="${esc(item.key)}" data-entry-field="kind"><option value="image" ${!isVideo(item) ? 'selected' : ''}>Photo / GIF</option><option value="video" ${isVideo(item) ? 'selected' : ''}>Video</option></select></div>
@@ -160,9 +176,9 @@ async function uploadFiles(fileList) {
   const files = [...fileList];
   // If the creator is still showing the two empty starter rows, replace them with uploads.
   if (state.builder.items.every(item => !item.name.trim() && !item.image)) state.builder.items = [];
-  const remaining = 64 - state.builder.items.length;
-  if (!remaining) return toast('The pack is full (64 contenders max).', true);
-  if (files.length > remaining) toast(`Only the first ${remaining} photos will be added.`, true);
+  const remaining = MAX_PACK_ITEMS - state.builder.items.length;
+  if (!remaining) return toast(`The pack is full (${MAX_PACK_ITEMS} contenders max).`, true);
+  if (files.length > remaining) toast(`Only the first ${remaining} media files will be added.`, true);
   const selected = files.slice(0, remaining);
   for (const file of selected) {
     if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) { toast(`Skipped ${file.name}: unsupported file.`, true); continue; }
@@ -184,12 +200,14 @@ async function savePack() {
   const items = b.items.filter(x => x.name.trim());
   if (b.title.trim().length < 3) return toast('Your pack needs a title (3+ characters).', true);
   if (items.length < 2) return toast('Add at least two named contenders.', true);
+  if (items.length > MAX_PACK_ITEMS) return toast(`A pack can have at most ${MAX_PACK_ITEMS} contenders.`, true);
   if (items.length !== b.items.length) return toast('Name all contenders or remove empty rows.', true);
   if (state.uploading) return toast('Finish uploading your photos first.', true);
   state.saving = true; renderBuilder();
   try {
     const pack = await api('/api/packs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: b.title, description: b.description, category: b.category, author: state.name || 'Anonymous', items }) });
+    rememberPack(pack.id, pack.ownerKey);
     state.saving = false; state.builder = null;
     navigate(`/pack/${encodeURIComponent(pack.id)}`); toast('Your pack is ready! 🎉');
   } catch (err) { state.saving = false; renderBuilder(); toast(err.message, true); }
@@ -221,13 +239,14 @@ function studioHtml(d) {
   <p class="subhead">Everyone in this studio can add contenders at the same time. Changes appear live.</p></div>
   <button class="button button-primary" data-action="copy-studio">🔗 Invite friends</button></div>
   <div class="studio-grid"><div class="panel studio-main">
+    ${d.status === 'deleted' ? `<div class="studio-published"><h2>🗑 Pack deleted</h2><p>The creator removed this published pack.</p></div>` : ''}
     ${d.status === 'published' ? `<div class="studio-published"><h2>🏆 Pack published!</h2><p>You're all done. Open the pack to start voting.</p><a class="button button-primary" href="/pack/${esc(d.packId)}" data-link>Play this pack →</a></div>` : ''}
     <h2 class="panel-title">01 / Pack details <span>✍️</span></h2>
     <div class="field"><label>Pack title ${isHost ? '(only you can edit)' : '(set by host)'}</label><input data-studio-meta="title" maxlength="70" placeholder="Most iconic characters ever" value="${esc(d.title)}" ${!isHost || !isEditing ? 'disabled' : ''}></div>
     <div class="field"><label>Description</label><textarea data-studio-meta="description" maxlength="240" placeholder="What should we rank?" ${!isHost || !isEditing ? 'disabled' : ''}>${esc(d.description)}</textarea></div>
     <div class="field"><label>Category</label><select data-studio-meta="category" ${!isHost || !isEditing ? 'disabled' : ''}>${CATEGORIES.map(cat => `<option ${cat === d.category ? 'selected' : ''}>${esc(cat)}</option>`).join('')}</select></div>
     <div class="section-divider"></div>
-    <div class="entry-head"><div><h3>02 / All contenders <span style="color:var(--lime)">${d.items.length}/64</span></h3><p>Everyone's additions appear here in real time. Edit your own entries; the host can edit all entries.</p></div></div>
+    <div class="entry-head"><div><h3>02 / All contenders <span style="color:var(--lime)">${d.items.length}/${MAX_PACK_ITEMS}</span></h3><p>Everyone's additions appear here in real time. Edit your own entries; the host can edit all entries.</p></div></div>
     <div class="entries-list">${d.items.map((item, index) => `<div class="entry-row"><span class="entry-number">${index + 1}</span>${tile(item, 'entry-thumb')}
       <div class="entry-fields"><input aria-label="Contender ${index + 1}" data-studio-entry="${esc(item.id)}" data-studio-field="name" maxlength="60" value="${esc(item.name)}" ${permitted(item) ? '' : 'disabled'}>
       <input aria-label="Media link" data-studio-entry="${esc(item.id)}" data-studio-field="image" placeholder="Image / GIF / video URL" value="${esc(item.image)}" ${permitted(item) ? '' : 'disabled'}>
@@ -280,7 +299,7 @@ async function uploadStudioFiles(fileList) {
   for (const file of files) {
     if (route().type !== 'studio' || state.draft?.status !== 'editing') break;
     if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) { toast(`Unsupported file: ${file.name}`, true); continue; }
-    if (state.draft.items.length >= 64) { toast('The studio has 64 contenders already.', true); break; }
+    if (state.draft.items.length >= MAX_PACK_ITEMS) { toast(`The studio has ${MAX_PACK_ITEMS} contenders already.`, true); break; }
     state.studioUploading++;
     try {
       const form = new FormData(); form.append('file', file);
@@ -351,11 +370,18 @@ function contenderButton(item, room, side) {
   const winner = match.revealed && match.outcome.winner.id === item.id;
   const lost = match.revealed && !winner;
   const votes = match.scores ? match.scores[side] : null;
+  // Photos and GIFs can be tapped to vote. Videos retain their playback controls
+  // without accidentally casting a vote when a user presses Play or Pause.
+  const tapToVote = !isVideo(item) && !match.revealed;
+  const mediaOpen = tapToVote
+    ? `<button type="button" class="contender-media contender-media-vote" data-vote="${esc(item.id)}" aria-label="Vote for ${esc(item.name)}">`
+    : '<div class="contender-media">';
+  const mediaClose = tapToVote ? '</button>' : '</div>';
   return `<div class="contender ${picked ? 'picked' : ''} ${winner ? 'winner' : ''} ${lost ? 'loser' : ''}">
   ${picked ? '<span class="selected-mark">✓ YOUR PICK</span>' : ''}
-  <div class="contender-media">${image(item, '', true)}</div>
+  ${mediaOpen}${image(item, '', true)}${mediaClose}
   <div class="contender-footer"><strong>${esc(item.name)}</strong>
-  <span>${match.revealed ? `${votes} vote${votes === 1 ? '' : 's'} ${winner ? '· 🏆 WINS' : ''}` : picked ? 'You voted for this contender' : 'Watch the clip or make your choice'}</span>
+  <span>${match.revealed ? `${votes} vote${votes === 1 ? '' : 's'} ${winner ? '· 🏆 WINS' : ''}` : picked ? 'You voted for this contender' : tapToVote ? 'Tap the photo to vote' : 'Watch the clip or make your choice'}</span>
   <button type="button" class="button ${picked ? 'button-primary' : 'button-secondary'} vote-pick" data-vote="${esc(item.id)}" ${match.revealed ? 'disabled' : ''}>${match.revealed ? winner ? '🏆 Winner' : 'Eliminated' : picked ? '✓ Selected' : 'Vote for this →'}</button></div></div>`;
 }
 function gameHtml(room) {
@@ -365,7 +391,7 @@ function gameHtml(room) {
   const online = room.players.filter(p => p.online).length;
   const label = room.round === 1 ? 'OPENING ROUND' : room.totalMatches - room.completed === 1 ? 'THE GRAND FINAL' : `ROUND ${room.round}`;
   const isLast = room.completed + 1 === room.totalMatches;
-  return `<div class="page">${roomHeader(room)}<div class="game-layout"><section class="game-main">
+  return `<div class="page page-game">${roomHeader(room)}<div class="game-layout"><section class="game-main">
   <div class="progress-row"><span>${label} · MATCH ${room.matchIndex + 1}/${room.roundMatchCount}</span><span>${room.completed} / ${room.totalMatches} MATCHES COMPLETE</span></div>
   <div class="progress-track"><div class="progress-fill" style="width:${Math.round((room.completed / Math.max(1,room.totalMatches)) * 100)}%"></div></div>
   <div class="game-prompt"><span class="eyebrow">${match.revealed ? '🏆 THE PEOPLE HAVE SPOKEN' : '⚔ FACE-OFF'}</span>
@@ -430,6 +456,28 @@ async function copyRoom(winner = false) {
   catch { window.prompt('Copy this link:', contents); }
 }
 
+async function deletePack(packId, useAdminKey = false) {
+  const pack = state.pack?.id === packId ? state.pack : state.packs.find(p => p.id === packId);
+  const label = pack?.title || 'this pack';
+  const ownerKey = packOwnerKey(packId);
+  let adminKey = '';
+  if (useAdminKey || !ownerKey) {
+    adminKey = window.prompt('Enter the PACK_ADMIN_KEY you set in Render to delete this older pack:') || '';
+    if (!adminKey) return;
+  }
+  if (!window.confirm(`Permanently delete "${label}"?\n\nThis removes the pack for everyone and cannot be undone.`)) return;
+  try {
+    await api(`/api/packs/${encodeURIComponent(packId)}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(adminKey ? { adminKey } : { ownerKey })
+    });
+    forgetPack(packId);
+    state.pack = null;
+    navigate('/');
+    toast('Pack deleted.');
+  } catch (err) { toast(err.message, true); }
+}
+
 function openModal(config) { modalState = config; renderModal(); }
 function closeModal() { modalState = null; modalRoot.innerHTML = ''; }
 function renderModal() {
@@ -491,12 +539,14 @@ document.addEventListener('click', event => {
   else if (action === 'studio-add') { const name = window.prompt('Name your contender:'); if (name?.trim()) studioAction('add', { item: { name: name.trim(), image:'', kind:'image' } }); }
   else if (action === 'studio-publish') {
     if (state.studioUploading) return toast('Wait for uploads to finish.', true);
-    flushStudioChanges().then(ok => { if (ok) studioAction('publish'); });
+    flushStudioChanges().then(async ok => { if (ok) { const result = await studioAction('publish'); if (result) rememberPack(result.packId, result.ownerKey); } });
   }
+  else if (action === 'delete-pack') deletePack(actionNode.dataset.id);
+  else if (action === 'delete-legacy-pack') deletePack(actionNode.dataset.id, true);
   else if (action === 'refresh') showPage();
   else if (action === 'join') openModal({ type: 'join' });
   else if (action === 'host') hostPack(actionNode.dataset.id);
-  else if (action === 'add-entry') { if (state.builder.items.length >= 64) toast('64 contenders max.', true); else { state.builder.items.push(blankEntry()); renderBuilder(); } }
+  else if (action === 'add-entry') { if (state.builder.items.length >= MAX_PACK_ITEMS) toast(`${MAX_PACK_ITEMS} contenders max.`, true); else { state.builder.items.push(blankEntry()); renderBuilder(); } }
   else if (action === 'save-pack') savePack();
   else if (action === 'copy-room') copyRoom();
   else if (action === 'start' || action === 'reveal' || action === 'next') roomAction(action);
