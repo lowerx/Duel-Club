@@ -13,6 +13,7 @@ const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path
 const uploadsDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
 const storeFile = path.join(dataDir, 'packs.json');
+const draftsFile = path.join(dataDir, 'drafts.json');
 
 const trips = [
   ['Paris', 'https://images.unsplash.com/photo-1502602898657-3e91760cbb34?w=960&q=80'],
@@ -56,10 +57,25 @@ function publicPack(pack, { full = false } = {}) {
     items: full ? items : items.slice(0, 4) };
 }
 function safeString(value, max = 100) { return String(value ?? '').trim().slice(0, max); }
-function safeImage(value) {
+function safeMedia(value) {
   const s = safeString(value, 1000);
   if (!s) return '';
-  if (/^https?:\/\//i.test(s) || /^\/uploads\/[a-f0-9]{32}\.(png|jpg|webp|gif)$/i.test(s)) return s;
+  // Prevent script/data URLs; uploaded media are always generated server-side.
+  if (/^https?:\/\/[^\s]+$/i.test(s) || /^\/uploads\/[a-f0-9]{32}\.(png|jpg|webp|gif|mp4|webm|mov)$/i.test(s)) return s;
+  return '';
+}
+function mediaKind(item) {
+  if (item?.kind === 'video') return 'video';
+  return /\.(mp4|webm|mov)(?:[?#]|$)/i.test(item?.image || '') ? 'video' : 'image';
+}
+function cleanItem(item, id = crypto.randomUUID()) {
+  return { id, name: safeString(item?.name, 60), image: safeMedia(item?.image),
+    kind: mediaKind(item), emoji: safeString(item?.emoji, 4) || '⭐' };
+}
+function validatePack(title, items) {
+  if (title.length < 3) return 'Give your pack a title (at least 3 characters).';
+  if (!Array.isArray(items) || items.length < 2 || items.length > 64) return 'Packs need between 2 and 64 contenders.';
+  if (items.some(item => !item.name)) return 'Every contender needs a name.';
   return '';
 }
 function shuffle(items) {
@@ -92,42 +108,61 @@ app.post('/api/packs', (req, res) => {
   const description = safeString(body.description, 240);
   const author = safeString(body.author, 32) || 'Anonymous';
   const category = safeString(body.category, 24) || 'Other';
-  if (title.length < 3) return res.status(400).json({ error: 'Give your pack a title (at least 3 characters).' });
-  if (!Array.isArray(body.items) || body.items.length < 2 || body.items.length > 64) {
-    return res.status(400).json({ error: 'Packs need between 2 and 64 contenders.' });
-  }
-  const items = body.items.map((item) => ({
-    id: crypto.randomUUID(),
-    name: safeString(item?.name, 60),
-    image: safeImage(item?.image),
-    emoji: safeString(item?.emoji, 4) || '⭐'
-  }));
-  if (items.some(item => !item.name)) return res.status(400).json({ error: 'Every contender needs a name.' });
+  const items = Array.isArray(body.items) ? body.items.map(item => cleanItem(item)) : [];
+  const validation = validatePack(title, items);
+  if (validation) return res.status(400).json({ error: validation });
   const pack = { id: crypto.randomUUID(), title, description, category, author, createdAt: new Date().toISOString(), items };
   packs.push(pack);
   savePacks();
   res.status(201).json(publicPack(pack, { full: true }));
 });
 
-const allowedMime = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
+const allowedMime = {
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
+  'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov'
+};
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 40 * 1024 * 1024;
 const upload = multer({
   storage: multer.diskStorage({
     destination: uploadsDir,
     filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + allowedMime[file.mimetype])
   }),
-  limits: { fileSize: 6 * 1024 * 1024, files: 1 },
+  limits: { fileSize: MAX_VIDEO_BYTES, files: 1 },
   fileFilter: (req, file, cb) => cb(null, !!allowedMime[file.mimetype])
 });
-app.post('/api/upload', (req, res, next) => {
+// Quick signature check prevents mislabelled HTML/scripts from being served as media.
+function mediaSignatureValid(file) {
+  const fd = fs.openSync(file.path, 'r');
+  const header = Buffer.alloc(32);
+  try { fs.readSync(fd, header, 0, header.length, 0); }
+  finally { fs.closeSync(fd); }
+  const mime = file.mimetype;
+  if (mime === 'image/jpeg') return header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  if (mime === 'image/png') return header.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
+  if (mime === 'image/gif') return ['GIF87a','GIF89a'].includes(header.toString('ascii',0,6));
+  if (mime === 'image/webp') return header.toString('ascii',0,4) === 'RIFF' && header.toString('ascii',8,12) === 'WEBP';
+  if (mime === 'video/webm') return header.subarray(0,4).equals(Buffer.from([0x1a,0x45,0xdf,0xa3]));
+  if (mime === 'video/mp4' || mime === 'video/quicktime') return header.toString('ascii',4,8) === 'ftyp';
+  return false;
+}
+app.post('/api/upload', (req, res) => {
   upload.single('file')(req, res, err => {
-    if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Images must be smaller than 6 MB.' : 'Image upload failed.' });
-    if (!req.file) return res.status(400).json({ error: 'Please choose a JPG, PNG, WebP or GIF image.' });
-    res.status(201).json({ url: `/uploads/${req.file.filename}` });
+    if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'File exceeds the 40 MB upload limit.' : 'Media upload failed.' });
+    if (!req.file) return res.status(400).json({ error: 'Choose a JPG, PNG, WebP, GIF, MP4, WebM or MOV file.' });
+    const isVideo = req.file.mimetype.startsWith('video/');
+    let verified = false;
+    try { verified = mediaSignatureValid(req.file); } catch { verified = false; }
+    if (req.file.size > (isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES) || !verified) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: isVideo ? 'Use a valid MP4, WebM or MOV video under 40 MB.' : 'Use a valid JPG, PNG, WebP or GIF under 15 MB.' });
+    }
+    res.status(201).json({ url: `/uploads/${req.file.filename}`, kind: isVideo ? 'video' : 'image' });
   });
 });
 app.use('/uploads', express.static(uploadsDir, { maxAge: '1d', index: false, dotfiles: 'deny' }));
 app.use(express.static(path.join(root, 'public')));
-app.get(['/room/:code', '/pack/:id', '/create'], (_req, res) => res.sendFile(path.join(root, 'public', 'index.html')));
+app.get(['/room/:code', '/pack/:id', '/create', '/studio/:code'], (_req, res) => res.sendFile(path.join(root, 'public', 'index.html')));
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && 'body' in err) return res.status(400).json({ error: 'Invalid request data.' });
   console.error(err);
@@ -188,7 +223,145 @@ function removeFromOldRoom(socket) {
 function reply(ack, payload) { if (typeof ack === 'function') ack(payload); }
 function error(ack, message) { reply(ack, { ok: false, error: message }); }
 
+
+// Collaborative pack studios. An invite code grants edit access; hosts publish the final pack.
+const drafts = new Map();
+try {
+  const storedDrafts = JSON.parse(fs.readFileSync(draftsFile, 'utf8'));
+  if (Array.isArray(storedDrafts)) for (const draft of storedDrafts) {
+    if (draft?.code && draft?.createdAt && Array.isArray(draft.items)) {
+      drafts.set(draft.code, { ...draft, editors: new Map(), updatedAt: Date.now() });
+    }
+  }
+} catch { /* First launch; empty draft store. */ }
+function saveDrafts() {
+  const stored = [...drafts.values()].map(({ editors, ...draft }) => draft);
+  const temp = `${draftsFile}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(stored));
+  fs.renameSync(temp, draftsFile);
+}
+function makeDraftCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code;
+  do { code = Array.from({ length: 7 }, () => alphabet[crypto.randomInt(alphabet.length)]).join(''); }
+  while (drafts.has(code));
+  return code;
+}
+function draftState(draft) {
+  return { code: draft.code, hostId: draft.hostId, status: draft.status,
+    packId: draft.packId || null, title: draft.title, description: draft.description,
+    category: draft.category, items: draft.items, editors: [...draft.editors.values()].map(editor => ({
+      id: editor.id, name: editor.name, online: editor.sockets.size > 0
+    })) };
+}
+function broadcastDraft(draft) {
+  draft.updatedAt = Date.now();
+  io.to(`draft:${draft.code}`).emit('draft:state', draftState(draft));
+}
+function leaveDraft(socket) {
+  const old = drafts.get(socket.data.draftCode);
+  if (!old) return;
+  const editor = old.editors.get(socket.data.playerId);
+  editor?.sockets.delete(socket.id);
+  socket.leave(`draft:${old.code}`);
+  socket.data.draftCode = null;
+  broadcastDraft(old);
+}
+function joinDraft(socket, draft, id, name) {
+  if (socket.data.draftCode && socket.data.draftCode !== draft.code) leaveDraft(socket);
+  let editor = draft.editors.get(id);
+  if (!editor) { editor = { id, name, sockets: new Set() }; draft.editors.set(id, editor); }
+  editor.name = name;
+  editor.sockets.add(socket.id);
+  socket.data.draftCode = draft.code;
+  socket.data.playerId = id;
+  socket.join(`draft:${draft.code}`);
+}
+function studioFor(socket) {
+  const draft = drafts.get(socket.data.draftCode);
+  return draft?.editors.has(socket.data.playerId) ? draft : null;
+}
 io.on('connection', socket => {
+  socket.on('draft:create', (data, ack) => {
+    const id = safeString(data?.playerId, 80);
+    const name = safeString(data?.name, 24);
+    if (!id || !name) return error(ack, 'Choose a nickname first.');
+    const code = makeDraftCode();
+    const draft = { code, hostId: id, status: 'editing', packId: null,
+      title: '', description: '', category: 'Other', items: [],
+      createdAt: new Date().toISOString(), updatedAt: Date.now(), editors: new Map() };
+    drafts.set(code, draft);
+    joinDraft(socket, draft, id, name);
+    saveDrafts();
+    reply(ack, { ok: true, code }); broadcastDraft(draft);
+  });
+  socket.on('draft:join', (data, ack) => {
+    const code = safeString(data?.code, 12).toUpperCase();
+    const id = safeString(data?.playerId, 80);
+    const name = safeString(data?.name, 24);
+    if (!id || !name) return error(ack, 'Choose a nickname first.');
+    const draft = drafts.get(code);
+    if (!draft) return error(ack, 'Pack studio not found. Ask your friend for a new invite link.');
+    if (!draft.editors.has(id) && draft.editors.size >= 30) return error(ack, 'This studio is full (30 editors).');
+    joinDraft(socket, draft, id, name);
+    reply(ack, { ok: true, code }); broadcastDraft(draft);
+  });
+  socket.on('draft:meta', (data, ack) => {
+    const draft = studioFor(socket);
+    if (!draft || draft.hostId !== socket.data.playerId) return error(ack, 'Only the studio creator can edit pack details.');
+    if (draft.status !== 'editing') return error(ack, 'This pack is already published.');
+    const field = data?.field;
+    if (!['title','description','category'].includes(field)) return error(ack, 'Invalid field.');
+    draft[field] = safeString(data?.value, field === 'title' ? 70 : field === 'description' ? 240 : 24);
+    saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
+  });
+  socket.on('draft:add', (data, ack) => {
+    const draft = studioFor(socket);
+    if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
+    if (draft.items.length >= 64) return error(ack, 'A pack can have at most 64 contenders.');
+    const entry = cleanItem(data?.item);
+    if (!entry.name) return error(ack, 'Every contender needs a name.');
+    entry.addedBy = socket.data.playerId;
+    entry.addedByName = draft.editors.get(socket.data.playerId).name;
+    draft.items.push(entry);
+    saveDrafts(); reply(ack, { ok: true, id: entry.id }); broadcastDraft(draft);
+  });
+  socket.on('draft:edit', (data, ack) => {
+    const draft = studioFor(socket);
+    if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
+    const entry = draft.items.find(item => item.id === data?.id);
+    if (!entry) return error(ack, 'Contender was removed.');
+    if (entry.addedBy !== socket.data.playerId && draft.hostId !== socket.data.playerId) return error(ack, 'You can only edit your entries.');
+    const field = data?.field;
+    if (!['name', 'image', 'kind'].includes(field)) return error(ack, 'Invalid field.');
+    if (field === 'kind') entry.kind = data?.value === 'video' ? 'video' : 'image';
+    else if (field === 'image') entry.image = safeMedia(data?.value);
+    else entry.name = safeString(data?.value, 60);
+    saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
+  });
+  socket.on('draft:remove', (data, ack) => {
+    const draft = studioFor(socket);
+    if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
+    const entry = draft.items.find(item => item.id === data?.id);
+    if (!entry) return error(ack, 'Contender was removed.');
+    if (entry.addedBy !== socket.data.playerId && draft.hostId !== socket.data.playerId) return error(ack, 'You can only remove your entries.');
+    draft.items = draft.items.filter(item => item.id !== entry.id);
+    saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
+  });
+  socket.on('draft:publish', (_data, ack) => {
+    const draft = studioFor(socket);
+    if (!draft || draft.hostId !== socket.data.playerId) return error(ack, 'Only the creator can publish.');
+    if (draft.status !== 'editing') return error(ack, 'This pack is already published.');
+    const items = draft.items.map(item => cleanItem(item));
+    const validation = validatePack(draft.title, items);
+    if (validation) return error(ack, validation);
+    const pack = { id: crypto.randomUUID(), title: draft.title, description: draft.description,
+      category: draft.category, author: draft.editors.get(draft.hostId)?.name || 'Duel Club',
+      createdAt: new Date().toISOString(), items };
+    packs.push(pack); savePacks();
+    draft.packId = pack.id; draft.status = 'published'; saveDrafts();
+    reply(ack, { ok: true, packId: pack.id }); broadcastDraft(draft);
+  });
   socket.on('room:create', (data, ack) => {
     const pack = packs.find(p => p.id === data?.packId);
     if (!pack) return error(ack, 'This pack no longer exists.');
@@ -269,7 +442,7 @@ io.on('connection', socket => {
     }
     reply(ack, { ok: true }); broadcast(room);
   });
-  socket.on('disconnect', () => removeFromOldRoom(socket));
+  socket.on('disconnect', () => { removeFromOldRoom(socket); leaveDraft(socket); });
 });
 function joinSocket(socket, room, id, name) {
   let person = room.players.get(id);
@@ -280,7 +453,7 @@ function joinSocket(socket, room, id, name) {
   socket.data.roomCode = room.code;
   socket.join(room.code);
 }
-// Room state is intentionally in memory; uploaded images and packs are persisted to DATA_DIR.
+// Game room state is in memory; packs, uploads and collaborative studio drafts persist to DATA_DIR.
 setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
