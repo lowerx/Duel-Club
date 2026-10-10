@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import multer from 'multer';
-import { startRound, score, resolveWinner } from './game-logic.js';
+import { startRound, roundLabel, score, resolveWinner } from './game-logic.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(root, 'data');
@@ -234,6 +234,9 @@ function serializeRoom(room, playerId) {
   return {
     code: room.code, status: room.status, pack: pack && publicPack(pack, { full: true }),
     hostId: room.hostId, players, round: room.round ?? 0,
+    roundLabel: room.roundEntrants ? roundLabel(room) : null,
+    isPreliminary: !!room.isPreliminary, playInByes: room.byes?.length ?? 0,
+    roundTarget: room.roundTarget ?? 0,
     matchIndex: room.matchIndex ?? 0, roundMatchCount: room.matches?.length ?? 0,
     completed: room.completed ?? 0, totalMatches: pack ? pack.items.length - 1 : 0,
     match: match ? { a: match.a, b: match.b, voteCount: Object.keys(match.votes).length,
@@ -482,10 +485,12 @@ io.on('connection', socket => {
     room.revealed = false;
     room.outcome = null;
     if (room.matchIndex >= room.matches.length) {
-      const entrants = [...room.roundWinners];
-      if (room.bye) entrants.push(room.bye);
+      // Preliminary winners join everyone who received a bye to form a full
+      // power-of-two bracket. Shuffle once for a fair regular-bracket draw.
+      const entrants = [...room.roundWinners, ...(room.byes ?? [])];
+      const wasPreliminary = room.isPreliminary;
       if (entrants.length === 1) { room.champion = entrants[0]; room.status = 'finished'; room.matches = []; }
-      else { room.round += 1; startRound(room, entrants); }
+      else { room.round += 1; startRound(room, wasPreliminary ? shuffle(entrants) : entrants); }
     }
     reply(ack, { ok: true }); broadcast(room);
   });

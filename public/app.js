@@ -379,6 +379,13 @@ function playerList(room, game = false) {
   <span class="player-name">${esc(p.name)}${p.id === state.playerId ? ' (you)' : ''}</span>${p.id === room.hostId ? '<span class="host-pill">HOST</span>' : ''}
   <span class="player-status ${p.online && (!game || p.voted) ? 'ready' : ''}">${!p.online ? 'Offline' : game ? p.voted ? '✓ Voted' : 'Choosing…' : '● Here'}</span></div>`).join('')}</div>`;
 }
+function bracketPlan(itemCount) {
+  const standard = 2 ** Math.floor(Math.log2(itemCount));
+  const qualifiers = itemCount - standard;
+  if (!qualifiers) return `🏆 Standard Round of ${standard} bracket · no byes`;
+  const byes = itemCount - 2 * qualifiers;
+  return `🎟 ${qualifiers} play-in match${qualifiers === 1 ? '' : 'es'} · ${byes} skip straight to Round of ${standard}`;
+}
 function lobbyHtml(room) {
   const isHost = room.hostId === state.playerId;
   return `<div class="page">${roomHeader(room)}<div class="lobby-grid"><section class="lobby-hero"><div><span class="eyebrow">🪩 YOUR PRIVATE PARTY LOBBY</span>
@@ -387,7 +394,7 @@ function lobbyHtml(room) {
   <button class="button button-secondary" data-action="join">⌨ Join another room</button></div></div>
   <div style="margin-top:29px">${isHost ? `<button class="button button-primary button-large" data-action="start">Start tournament →</button>` : `<span class="eyebrow">⏳ Waiting for host to start…</span>`}</div></section>
   <aside class="panel lobby-panel"><h3>👥 Players in the room <span style="color:var(--lime)">${room.players.filter(p => p.online).length}/30</span></h3>${playerList(room)}
-  <div class="sidebar-division"></div><p class="sidebar-caption">🎮 ${room.pack.itemCount} contenders · ${room.totalMatches} head-to-head matches<br><br>Everyone gets one vote per match. The most votes advance. The host controls the pace.</p></aside></div></div>`;
+  <div class="sidebar-division"></div><p class="sidebar-caption">🎮 ${room.pack.itemCount} contenders · ${room.totalMatches} head-to-head matches<br><br>${bracketPlan(room.pack.itemCount)}<br><br>Everyone gets one vote per match. The most votes advance. The host controls the pace.</p></aside></div></div>`;
 }
 function contenderButton(item, room, side) {
   const match = room.match;
@@ -418,7 +425,7 @@ function gameHtml(room) {
   if (!match) return `<div class="page">${roomHeader(room)}<div class="loading">Preparing the next round…</div></div>`;
   const isHost = room.hostId === state.playerId;
   const online = room.players.filter(p => p.online).length;
-  const label = room.round === 1 ? 'OPENING ROUND' : room.totalMatches - room.completed === 1 ? 'THE GRAND FINAL' : `ROUND ${room.round}`;
+  const label = room.roundLabel || (room.round === 1 ? 'OPENING ROUND' : `ROUND ${room.round}`);
   const isLast = room.completed + 1 === room.totalMatches;
   return `<div class="page page-game">${roomHeader(room)}<div class="game-layout"><section class="game-main">
   <div class="progress-row"><span>${label} · MATCH ${room.matchIndex + 1}/${room.roundMatchCount}</span><span>${room.completed} / ${room.totalMatches} MATCHES COMPLETE</span></div>
@@ -432,7 +439,7 @@ function gameHtml(room) {
     : `<button class="button button-primary button-large" data-action="reveal" ${match.voteCount ? '' : 'disabled'}>Reveal votes ✳</button><span class="waiting-message">${match.voteCount} vote${match.voteCount === 1 ? '' : 's'} cast</span>`
     : `<p class="waiting-message">${match.revealed ? 'Waiting for the host to move to the next matchup…' : match.myVote ? '✓ Vote locked in. Waiting for the host to reveal…' : 'Pick a contender to cast your vote.'}</p>`}</div>
   </section><aside class="panel game-sidebar"><h3>⚡ Match day</h3><div class="vote-stat"><span>Votes cast</span><strong>${match.voteCount}<span style="font-size:15px"> / ${online}</span></strong></div>
-  <div class="vote-stat"><span>Round</span><strong>${room.round}</strong></div>
+  <div class="vote-stat"><span>Stage</span><strong style="font-size:clamp(14px,1.5vw,22px)">${esc(label)}</strong></div>
   <h3 style="margin-top:28px">👥 Your squad</h3>${playerList(room, true)}<div class="sidebar-division"></div>
   <button class="button button-secondary full-button" data-action="copy-room">🔗 Invite a friend</button><p class="sidebar-caption">${isHost ? 'You are the host! You reveal votes and advance the tournament when everyone is ready.' : 'Votes stay secret until the host reveals them. You can change your pick before the reveal.'}</p></aside></div></div>`;
 }
