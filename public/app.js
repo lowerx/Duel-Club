@@ -14,6 +14,20 @@ const state = {
 localStorage.setItem('duelclub:playerId', state.playerId);
 // Deletion permission stays in this browser, never in a public URL or nickname.
 const OWNED_PACKS_KEY = 'duelclub:ownedPacks';
+const STUDIOS_KEY = 'duelclub:studios';
+const BUILDER_KEY = 'duelclub:soloDraft';
+function trackedStudios() { try { const list = JSON.parse(localStorage.getItem(STUDIOS_KEY) || '[]'); return Array.isArray(list) ? list.filter(x => /^[A-Z2-9]{7}$/.test(x)).slice(-80) : []; } catch { return []; } }
+function rememberStudio(code) {
+  if (!/^[A-Z2-9]{7}$/.test(code || '')) return;
+  localStorage.setItem(STUDIOS_KEY, JSON.stringify([...new Set([...trackedStudios(), code])].slice(-80)));
+}
+function saveSoloDraft() { if (state.builder) localStorage.setItem(BUILDER_KEY, JSON.stringify(state.builder)); }
+function hasSoloDraft() {
+  try { const draft = JSON.parse(localStorage.getItem(BUILDER_KEY) || 'null'); return Boolean(draft && (draft.title?.trim() || draft.description?.trim() || draft.items?.some(item => item.name?.trim() || item.image))); }
+  catch { return false; }
+}
+function dateStamp(value) { const d = new Date(value); return Number.isNaN(+d) ? '' : d.toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' }); }
+
 function ownedPacks() {
   try { const v = JSON.parse(localStorage.getItem(OWNED_PACKS_KEY) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
   catch { return {}; }
@@ -92,6 +106,7 @@ function refreshNameChip() { $('#name-chip-text').textContent = state.name || 'Y
 function updateNav() {
   $('#discover-link').classList.toggle('active', route().type === 'home');
   $('#create-link').classList.toggle('active', route().type === 'create');
+  $('#profile-link').classList.toggle('active', route().type === 'profile');
 }
 
 function previewCover(pack) {
@@ -135,6 +150,8 @@ async function showPage() {
     app.innerHTML = `<div class="loading">✳ Loading the good stuff…</div>`;
     try { state.packs = await api('/api/packs'); if (myToken === state.pageToken) app.innerHTML = homeHtml(); }
     catch (err) { if (myToken === state.pageToken) app.innerHTML = `<div class="empty-state">Couldn't load packs. ${esc(err.message)} <button class="button button-secondary" data-action="refresh">Try again</button></div>`; }
+  } else if (page.type === 'profile') {
+    renderProfile(myToken);
   } else if (page.type === 'create') {
     if (!state.builder) resetBuilder();
     renderBuilder();
@@ -144,13 +161,52 @@ async function showPage() {
     joinStudioFromLink(page.id.toUpperCase());
   } else if (page.type === 'pack' && page.id) {
     app.innerHTML = '<div class="loading">✳ Getting the contenders ready…</div>';
-    try { const pack = await api(`/api/packs/${encodeURIComponent(page.id)}`); if (myToken === state.pageToken) { state.pack = pack; renderPack(pack); } }
+    try { const pack = await api(`/api/packs/${encodeURIComponent(page.id)}`); if (myToken === state.pageToken) { state.pack = pack; renderPack(pack); loadPackStats(pack.id, myToken); } }
     catch (err) { if (myToken === state.pageToken) renderNotFound(err.message); }
   } else if (page.type === 'room' && page.id) {
     if (state.room?.code === page.id.toUpperCase()) renderRoom();
     else app.innerHTML = `<div class="loading">✳ Connecting to room ${esc(page.id.toUpperCase())}…</div>`;
     joinRoomFromLink(page.id.toUpperCase());
   } else renderNotFound();
+}
+async function renderProfile(token) {
+  app.innerHTML = `<div class="page"><div class="page-head"><div><span class="eyebrow">YOUR SPACE / DUEL CLUB</span><h1>My corner of the club<span class="gradient-text">.</span></h1><p class="subhead">Your published creations and unfinished drafts, saved on this browser.</p></div></div><div class="loading">Loading your collection…</div></div>`;
+  try {
+    const [packs, ...studioRequests] = await Promise.all([
+      api('/api/packs'), ...trackedStudios().map(code => api(`/api/studios/${code}/summary`).catch(() => null))
+    ]);
+    if (token !== state.pageToken) return;
+    state.packs = packs;
+    const owned = packs.filter(pack => !!packOwnerKey(pack.id));
+    const studios = studioRequests.filter(Boolean);
+    const editing = studios.filter(s => s.status === 'editing');
+    const published = studios.filter(s => s.status === 'published' && s.packId);
+    const nickname = state.name || 'Duel Club member';
+    const initials = nickname.slice(0,1).toUpperCase();
+    const solo = hasSoloDraft();
+    const studioRow = s => `<a class="collection-item" href="/studio/${esc(s.code)}" data-link><span class="collection-glyph">◉</span><span class="collection-info"><strong>${esc(s.title || 'Untitled shared studio')}</strong><small>${s.itemCount} contenders · ${esc(s.code)} · ${esc(dateStamp(s.updatedAt))}</small></span><span class="collection-link">Continue ↗</span></a>`;
+    app.innerHTML = `<div class="page profile-page"><div class="profile-hero"><div class="profile-identity"><div class="profile-avatar">${esc(initials)}</div><div><span class="eyebrow">YOUR CLUBHOUSE</span><h1>${esc(nickname)}'s space<span class="gradient-text"> ✳</span></h1><p>All your own packs and works in progress, in one place.</p></div></div><div class="profile-pulse"><span><strong>${owned.length}</strong><small>Published packs</small></span><span><strong>${editing.length + (solo ? 1 : 0)}</strong><small>In progress</small></span></div></div>
+    <div class="profile-columns"><section class="profile-section"><div class="profile-section-head"><div><span class="eyebrow">01 / THE COLLECTION</span><h2>Created by you <span class="profile-counter">${owned.length}</span></h2></div><button class="button button-secondary button-small" data-action="create">+ New pack</button></div>
+    ${owned.length ? `<div class="profile-pack-grid">${owned.map(pack => `<div class="profile-pack-wrap">${packCard(pack)}<span class="owner-tag">✳ YOUR PACK</span></div>`).join('')}</div>` : '<div class="profile-empty"><div class="profile-empty-icon">✳</div><h3>Your hall of fame starts here.</h3><p>Publish a pack from this browser and it will appear here.</p><button class="button button-primary button-small" data-action="create">Create your first pack ↗</button></div>'}
+    </section><section class="profile-section"><div class="profile-section-head"><div><span class="eyebrow">02 / THE WORKBENCH</span><h2>In progress <span class="profile-counter">${editing.length + (solo ? 1 : 0)}</span></h2></div><button class="button button-secondary button-small" data-action="create-together">+ Studio</button></div>
+    <div class="collection-list">${solo ? `<a class="collection-item" href="/create" data-link><span class="collection-glyph solo">✦</span><span class="collection-info"><strong>Your unfinished solo pack</strong><small>Private to this browser · Autosaved</small></span><span class="collection-link">Edit ↗</span></a>` : ''}
+    ${editing.map(studioRow).join('')}${!editing.length && !solo ? '<div class="profile-empty"><div class="profile-empty-icon">◌</div><h3>Nothing on the workbench.</h3><p>Start a solo draft or invite friends to build a pack together.</p></div>' : ''}</div>
+    ${published.length ? `<div class="profile-section-head extra"><div><span class="eyebrow">03 / TEAMWORK</span><h2>Finished collaborations</h2></div></div><div class="collection-list">${published.map(s => `<a href="/pack/${esc(s.packId)}" data-link class="collection-item"><span class="collection-glyph">✓</span><span class="collection-info"><strong>${esc(s.title || 'Shared pack')}</strong><small>${s.itemCount} contenders · Published</small></span><span class="collection-link">View ↗</span></a>`).join('')}</div>` : ''}
+    <p class="profile-note">🔒 This is a browser-based profile, not a login account. Packs are linked to the original browser's private creator key; joined studios are remembered on this device. Clearing browser storage or switching devices won't transfer ownership.</p></section></div></div>`;
+  } catch (err) { if (token === state.pageToken) app.innerHTML = `<div class="empty-state">Couldn’t load your collection: ${esc(err.message)} <button class="button button-secondary" data-action="refresh">Retry</button></div>`; }
+}
+function statsHtml(stats) {
+  const rows = stats.contenders.filter(item => item.wins + item.losses > 0);
+  if (!rows.length) return `<div class="stats-empty"><span>◉</span><div><h3>The leaderboard is waiting.</h3><p>Once you finish voting on a matchup, the win percentages and vote shares will appear here.</p></div></div>`;
+  return `<div class="stats-summary"><div><strong>${stats.completedMatches}</strong><span>Decided matchups</span></div><div><strong>${stats.completedTournaments}</strong><span>Completed tournaments</span></div><div><strong>${stats.totalVotes}</strong><span>Votes cast</span></div></div><div class="stats-heading"><span>CONTENDER / FORM</span><span>WIN RATE</span></div>
+  <div class="stats-leaderboard">${rows.map((item,index) => `<div class="stat-contender"><span class="stat-place">${String(index+1).padStart(2,'0')}</span><div class="stat-avatar">${image(item)}</div><div class="stat-details"><div class="stat-title"><strong>${esc(item.name)}</strong>${item.championships ? `<span class="stat-crown">♛ ${item.championships} titles</span>` : ''}</div><div class="stat-track"><span style="width:${item.winRate}%"></span></div><small>${item.wins} wins · ${item.losses} losses · ${item.voteShare}% of votes in its matchups</small></div><strong class="stat-percent">${item.winRate}%</strong></div>`).join('')}</div><p class="stats-disclaimer">Win rate = match wins ÷ matches played. Vote share measures how many individual votes the contender received in the matches it appeared in. Bye rounds aren't counted. Statistics start collecting after this update.</p>`;
+}
+async function loadPackStats(packId, token) {
+  try {
+    const stats = await api(`/api/packs/${encodeURIComponent(packId)}/stats`);
+    if (token !== state.pageToken || route().type !== 'pack' || route().id !== packId) return;
+    const el = $('#pack-statistics-content'); if (el) el.innerHTML = statsHtml(stats);
+  } catch { const el = $('#pack-statistics-content'); if (el) el.innerHTML = '<p class="subhead">Statistics are temporarily unavailable.</p>'; }
 }
 function renderNotFound(message = 'We could not find that page.') {
   app.innerHTML = `<div class="not-found"><div style="font-size:60px">🔎</div><h1>Nothing to duel here.</h1><p class="subhead">${esc(message)}</p><button class="button button-primary" data-action="home" style="margin-top:25px">Back to packs →</button></div>`;
@@ -165,10 +221,19 @@ function renderPack(pack) {
   <button class="button button-secondary button-large" data-action="join">Join a room</button></div><p class="sidebar-caption">Play with friends in real time, or start alone. Sharing a link is all it takes.</p>
   ${packOwnerKey(pack.id) ? `<button type="button" class="delete-pack-link" data-action="delete-pack" data-id="${esc(pack.id)}">🗑 Delete my pack</button>` : !builtInPackIds.has(pack.id) ? `<button type="button" class="delete-pack-link" data-action="delete-legacy-pack" data-id="${esc(pack.id)}">Delete older pack (admin key)</button>` : ''}
   </div></div>
+  <section class="pack-stats-section"><div class="section-head"><div><span class="eyebrow">THE NUMBERS DON'T LIE</span><h2>The fan favourites.</h2><p class="subhead">Live statistics from completed matchups across this pack.</p></div><span class="stats-live-dot">● UPDATED AFTER EVERY RESULT</span></div><div id="pack-statistics-content" class="stats-panel"><div class="loading">Crunching the votes…</div></div></section>
   <div class="section-divider"></div><h2 class="detail-item-label">Meet the contenders <span class="subhead">(${pack.itemCount})</span></h2>
   <div class="detail-items">${pack.items.map(item => `<div class="detail-item">${tile(item)}<strong>${esc(item.name)}</strong></div>`).join('')}</div></div>`;
 }
-function resetBuilder() { state.builder = { title: '', description: '', category: 'Other', items: [blankEntry(), blankEntry()] }; }
+function resetBuilder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(BUILDER_KEY) || 'null');
+    if (saved && Array.isArray(saved.items) && saved.items.length <= MAX_PACK_ITEMS) {
+      state.builder = saved; return;
+    }
+  } catch { /* Invalid saved draft. */ }
+  state.builder = { title: '', description: '', category: 'Other', items: [blankEntry(), blankEntry()] };
+}
 function blankEntry() { return { key: crypto.randomUUID(), name: '', image: '', kind: 'image', emoji: '✨' }; }
 function renderBuilder() {
   if (!state.builder) resetBuilder();
@@ -214,9 +279,9 @@ async function uploadFiles(fileList) {
     try {
       const form = new FormData(); form.append('file', file);
       const response = await api('/api/upload', { method: 'POST', body: form });
-      record.image = response.url; record.kind = response.kind;
+      record.image = response.url; record.kind = response.kind; saveSoloDraft();
     } catch (err) { toast(`${file.name}: ${err.message}`, true); }
-    finally { state.uploading--; renderBuilder(); }
+    finally { state.uploading--; saveSoloDraft(); renderBuilder(); }
   }
   if (selected.length) toast(`Added ${selected.length} contender${selected.length !== 1 ? 's' : ''}.`);
 }
@@ -233,7 +298,7 @@ async function savePack() {
     const pack = await api('/api/packs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: b.title, description: b.description, category: b.category, author: state.name || 'Anonymous', items }) });
     rememberPack(pack.id, pack.ownerKey);
-    state.saving = false; state.builder = null;
+    state.saving = false; state.builder = null; localStorage.removeItem(BUILDER_KEY);
     navigate(`/pack/${encodeURIComponent(pack.id)}`); toast('Your pack is ready! 🎉');
   } catch (err) { state.saving = false; renderBuilder(); toast(err.message, true); }
 }
@@ -244,6 +309,7 @@ async function createStudio() {
     caption: 'Choose your nickname, then share a link so your friends can add contenders.', onConfirm: createStudio });
   try {
     const { code } = await rpc('draft:create', { playerId: state.playerId, name: state.name });
+    rememberStudio(code);
     navigate(`/studio/${code}`);
   } catch (err) { toast(err.message, true); }
 }
@@ -251,7 +317,7 @@ async function joinStudioFromLink(code) {
   if (route().type !== 'studio' || route().id.toUpperCase() !== code) return;
   if (!state.name) return openModal({ type: 'name', title: 'Join your friends',
     caption: 'Pick the name others will see as you add photos, GIFs and videos.', onConfirm: () => joinStudioFromLink(code) });
-  try { await rpc('draft:join', { code, playerId: state.playerId, name: state.name }); }
+  try { await rpc('draft:join', { code, playerId: state.playerId, name: state.name }); rememberStudio(code); }
   catch (err) { if (route().type === 'studio') renderNotFound(err.message); toast(err.message, true); }
 }
 function studioHtml(d) {
@@ -417,7 +483,7 @@ function contenderButton(item, room, side) {
   ${picked ? '<span class="selected-mark">✓ YOUR PICK</span>' : ''}
   ${mediaOpen}${image(item, '', true)}${expandHint}${mediaClose}
   <div class="contender-footer"><strong>${esc(item.name)}</strong>
-  <span>${match.revealed ? `${votes} vote${votes === 1 ? '' : 's'} ${winner ? '· 🏆 WINS' : ''}` : picked ? 'You voted for this contender' : canExpand ? 'Click the image to expand · Vote below' : 'Make your choice below'}</span>
+  <span>${match.revealed ? `${votes} vote${votes === 1 ? '' : 's'} · ${match.scores.total ? Math.round(100 * votes / match.scores.total) : 0}% of votes ${winner ? '· 🏆 WINS' : ''}` : picked ? 'You voted for this contender' : canExpand ? 'Click the image to expand · Vote below' : 'Make your choice below'}</span>
   <button type="button" class="button ${picked ? 'button-primary' : 'button-secondary'} vote-pick" data-vote="${esc(item.id)}" ${match.revealed ? 'disabled' : ''}>${match.revealed ? winner ? '🏆 Winner' : 'Eliminated' : picked ? '✓ Selected' : 'Vote for this →'}</button></div></div>`;
 }
 function gameHtml(room) {
@@ -571,14 +637,14 @@ document.addEventListener('click', event => {
   const studioRemove = event.target.closest('[data-studio-remove]');
   if (studioRemove) { studioAction('remove', { id: studioRemove.dataset.studioRemove }); return; }
   const remove = event.target.closest('[data-remove]');
-  if (remove && state.builder) { state.builder.items = state.builder.items.filter(x => x.key !== remove.dataset.remove); renderBuilder(); return; }
+  if (remove && state.builder) { state.builder.items = state.builder.items.filter(x => x.key !== remove.dataset.remove); saveSoloDraft(); renderBuilder(); return; }
   const vote = event.target.closest('[data-vote]');
   if (vote && !vote.disabled) { roomAction('vote', { choice: vote.dataset.vote }); return; }
   const actionNode = event.target.closest('[data-action]');
   if (!actionNode) return;
   const action = actionNode.dataset.action;
   if (action === 'home') navigate('/');
-  else if (action === 'create') { state.builder = null; navigate('/create'); }
+  else if (action === 'create') navigate('/create');
   else if (action === 'create-together') createStudio();
   else if (action === 'copy-studio') copyStudio();
   else if (action === 'studio-add') { const name = window.prompt('Name your contender:'); if (name?.trim()) studioAction('add', { item: { name: name.trim(), image:'', kind:'image' } }); }
@@ -591,7 +657,7 @@ document.addEventListener('click', event => {
   else if (action === 'refresh') showPage();
   else if (action === 'join') openModal({ type: 'join' });
   else if (action === 'host') hostPack(actionNode.dataset.id);
-  else if (action === 'add-entry') { if (state.builder.items.length >= MAX_PACK_ITEMS) toast(`${MAX_PACK_ITEMS} contenders max.`, true); else { state.builder.items.push(blankEntry()); renderBuilder(); } }
+  else if (action === 'add-entry') { if (state.builder.items.length >= MAX_PACK_ITEMS) toast(`${MAX_PACK_ITEMS} contenders max.`, true); else { state.builder.items.push(blankEntry()); saveSoloDraft(); renderBuilder(); } }
   else if (action === 'save-pack') savePack();
   else if (action === 'copy-room') copyRoom();
   else if (action === 'start' || action === 'reveal' || action === 'next') roomAction(action);
@@ -625,6 +691,7 @@ document.addEventListener('input', event => {
     const row = state.builder.items.find(x => x.key === target.dataset.entry);
     if (row) row[target.dataset.entryField] = target.value;
   }
+  if (target.dataset.formField || target.dataset.entry) saveSoloDraft();
 });
 document.addEventListener('change', event => {
   if (event.target.id === 'file-upload' && state.builder) uploadFiles(event.target.files);
@@ -644,12 +711,12 @@ document.addEventListener('change', event => {
   if (event.target.dataset.entryField === 'image' && state.builder) {
     const row = state.builder.items.find(x => x.key === event.target.dataset.entry);
     if (row && /\.(mp4|webm|mov)(?:[?#]|$)/i.test(row.image)) row.kind = 'video';
-    renderBuilder();
+    saveSoloDraft(); renderBuilder();
   }
   if (event.target.dataset.entryField === 'kind' && state.builder) {
     const row = state.builder.items.find(x => x.key === event.target.dataset.entry);
     if (row) row.kind = event.target.value;
-    renderBuilder();
+    saveSoloDraft(); renderBuilder();
   }
 });
 document.addEventListener('submit', event => { if (event.target.id === 'modal-form') modalSubmit(event); });

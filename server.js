@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import multer from 'multer';
 import { startRound, roundLabel, score, resolveWinner } from './game-logic.js';
+import { makePersistentStore } from './persistent-store.js';
+const cloud = makePersistentStore();
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(root, 'data');
@@ -14,6 +16,7 @@ const uploadsDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
 const storeFile = path.join(dataDir, 'packs.json');
 const draftsFile = path.join(dataDir, 'drafts.json');
+const statsFile = path.join(dataDir, 'pack-stats.json');
 
 const trips = [
   ['Paris', 'https://images.unsplash.com/photo-1502602898657-3e91760cbb34?w=960&q=80'],
@@ -44,9 +47,53 @@ try {
   if (!Array.isArray(packs)) throw new Error('Invalid file');
 } catch {
   packs = seedPacks;
-  savePacks();
+  if (!cloud.enabled) savePacks();
+}
+// Aggregate only completed match results; data survives server restarts when DATA_DIR persists.
+let packStats = {};
+try {
+  const saved = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) packStats = saved;
+} catch { /* No match statistics yet. */ }
+function saveStats() {
+  if (cloud.enabled) return cloud.save('stats', packStats);
+  const temp = `${statsFile}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(packStats, null, 2));
+  fs.renameSync(temp, statsFile);
+  return;
+}
+function getStats(pack) {
+  const record = packStats[pack.id] || {};
+  const contenders = pack.items.map(item => {
+    const row = record.contenders?.[item.id] || {};
+    const wins = row.wins || 0, losses = row.losses || 0;
+    const votesFor = row.votesFor || 0, votesAgainst = row.votesAgainst || 0;
+    return { id: item.id, name: item.name, image: item.image, kind: item.kind, emoji: item.emoji,
+      wins, losses, votesFor, votesAgainst, championships: row.championships || 0,
+      winRate: wins + losses ? Math.round(100 * wins / (wins + losses)) : null,
+      voteShare: votesFor + votesAgainst ? Math.round(100 * votesFor / (votesFor + votesAgainst)) : null };
+  }).sort((a,b) => b.wins - a.wins || b.votesFor - a.votesFor || b.championships - a.championships);
+  return { completedMatches: record.matches || 0, completedTournaments: record.tournaments || 0,
+    totalVotes: record.totalVotes || 0, contenders };
+}
+function recordMatch(packId, match, outcome, votes, champion = null) {
+  const record = packStats[packId] ||= { matches:0, tournaments:0, totalVotes:0, contenders:{} };
+  const a = record.contenders[match.a.id] ||= { wins:0, losses:0, votesFor:0, votesAgainst:0, championships:0 };
+  const b = record.contenders[match.b.id] ||= { wins:0, losses:0, votesFor:0, votesAgainst:0, championships:0 };
+  a.votesFor += votes.a; a.votesAgainst += votes.b;
+  b.votesFor += votes.b; b.votesAgainst += votes.a;
+  a[outcome.winner.id === match.a.id ? 'wins' : 'losses'] += 1;
+  b[outcome.winner.id === match.b.id ? 'wins' : 'losses'] += 1;
+  record.matches += 1;
+  record.totalVotes += votes.total;
+  if (champion) {
+    record.tournaments += 1;
+    record.contenders[champion.id].championships += 1;
+  }
+  return saveStats();
 }
 function savePacks() {
+  if (cloud.enabled) return cloud.save('packs', packs);
   const tmp = `${storeFile}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(packs, null, 2));
   fs.renameSync(tmp, storeFile);
@@ -101,6 +148,7 @@ function shuffle(items) {
 }
 
 const app = express();
+const apiAction = handler => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next);
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -108,14 +156,19 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '1mb' }));
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, storage: cloud.enabled ? 'supabase' : 'local' }));
 app.get('/api/packs', (_req, res) => res.json(packs.slice().reverse().map(p => publicPack(p))));
+app.get('/api/packs/:id/stats', (req, res) => {
+  const pack = packs.find(p => p.id === req.params.id);
+  if (!pack) return res.status(404).json({ error: 'This pack was not found.' });
+  res.json(getStats(pack));
+});
 app.get('/api/packs/:id', (req, res) => {
   const pack = packs.find(p => p.id === req.params.id);
   if (!pack) return res.status(404).json({ error: 'This pack was not found.' });
   res.json(publicPack(pack, { full: true }));
 });
-app.post('/api/packs', (req, res) => {
+app.post('/api/packs', apiAction(async (req, res) => {
   const body = req.body ?? {};
   const title = safeString(body.title, 70);
   const description = safeString(body.description, 240);
@@ -127,12 +180,77 @@ app.post('/api/packs', (req, res) => {
   const ownerKey = makeOwnerKey();
   const pack = { id: crypto.randomUUID(), title, description, category, author, createdAt: new Date().toISOString(), items, ownerKeyHash: keyDigest(ownerKey).toString('hex') };
   packs.push(pack);
-  savePacks();
+  try { await savePacks(); } catch (err) { packs.pop(); throw err; }
   // The key is returned ONLY on creation, never via public pack listings or detail routes.
   res.status(201).json({ ...publicPack(pack, { full: true }), ownerKey });
-});
+}));
 
-app.delete('/api/packs/:id', (req, res) => {
+// One-time migration endpoint. Protected with PACK_ADMIN_KEY, never exposed in URLs.
+// Import preserves original pack IDs, so creator keys saved in the browser still work.
+app.post('/api/admin/restore-pack', apiAction(async (req, res) => {
+  if (!adminKeyMatch(req.body?.adminKey)) return res.status(403).json({ error: 'Invalid administrator key.' });
+  const source = req.body?.pack || {};
+  const id = safeString(source.id, 80);
+  if (!/^[a-zA-Z0-9-]{2,80}$/.test(id)) return res.status(400).json({ error: 'Invalid pack ID.' });
+  if (packs.some(p => p.id === id)) return res.json({ ok: true, id, skipped: true });
+  const title = safeString(source.title, 70);
+  const items = Array.isArray(source.items) ? source.items.map(item => {
+    const existingId = safeString(item?.id, 80);
+    const safeId = /^[a-zA-Z0-9-]{1,80}$/.test(existingId) ? existingId : crypto.randomUUID();
+    return cleanItem(item, safeId);
+  }) : [];
+  const problem = validatePack(title, items);
+  if (problem) return res.status(400).json({ error: problem });
+  if (new Set(items.map(i => i.id)).size !== items.length) return res.status(400).json({error:'Duplicate contender IDs.'});
+  const ownerKey = req.body?.ownerKey;
+  const verifiedOwnerKey = typeof ownerKey === 'string' && /^[a-f0-9]{64}$/.test(ownerKey) ? ownerKey : null;
+  const pack = { id, title, items, description:safeString(source.description, 240),
+    category:safeString(source.category, 24) || 'Other', author:safeString(source.author, 32) || 'Anonymous',
+    createdAt:safeString(source.createdAt, 50) || new Date().toISOString(),
+    ...(verifiedOwnerKey ? {ownerKeyHash:keyDigest(verifiedOwnerKey).toString('hex')} : {}) };
+  packs.push(pack);
+  try { await savePacks(); } catch (err) { packs.pop(); throw err; }
+  const oldStats = req.body?.stats;
+  if (oldStats && Array.isArray(oldStats.contenders)) {
+    const limit = n => Number.isSafeInteger(n) ? Math.max(0, Math.min(n, 100000000)) : 0;
+    const allowed = new Set(items.map(i => i.id));
+    const contenders = {};
+    for (const row of oldStats.contenders) {
+      if (!allowed.has(row?.id)) continue;
+      contenders[row.id] = { wins:limit(row.wins), losses:limit(row.losses),
+        votesFor:limit(row.votesFor), votesAgainst:limit(row.votesAgainst), championships:limit(row.championships) };
+    }
+    packStats[id] = { matches:limit(oldStats.completedMatches),
+      tournaments:limit(oldStats.completedTournaments), totalVotes:limit(oldStats.totalVotes), contenders };
+    await saveStats();
+  }
+  res.json({ ok:true, id });
+}));
+
+app.post('/api/admin/restore-studio', apiAction(async (req, res) => {
+  if (!adminKeyMatch(req.body?.adminKey)) return res.status(403).json({ error: 'Invalid administrator key.' });
+  const source = req.body?.studio || {};
+  const code = safeString(source.code, 12).toUpperCase();
+  if (!/^[A-Z2-9]{7}$/.test(code)) return res.status(400).json({ error: 'Invalid studio code.' });
+  if (drafts.has(code)) return res.json({ok:true,code,skipped:true});
+  const incoming = Array.isArray(source.items) ? source.items : [];
+  if (incoming.length > MAX_PACK_ITEMS) return res.status(400).json({error:'Too many studio contenders.'});
+  const items = incoming.map(item => ({
+    ...cleanItem(item, /^[a-zA-Z0-9-]{1,80}$/.test(item?.id || '') ? item.id : crypto.randomUUID()),
+    addedBy:safeString(item?.addedBy, 80), addedByName:safeString(item?.addedByName, 24)
+  }));
+  const draft = {code, hostId:safeString(source.hostId,80), status:source.status==='published'?'published':'editing',
+    packId:safeString(source.packId,80)||null, title:safeString(source.title,70),
+    description:safeString(source.description,240),category:safeString(source.category,24)||'Other',items,
+    createdAt:safeString(source.createdAt,50)||new Date().toISOString(),
+    updatedAt:Date.now(),editors:new Map()};
+  if (!draft.hostId) return res.status(400).json({error:'Missing original studio host ID.'});
+  drafts.set(code,draft);
+  try { await saveDrafts(); } catch (err) { drafts.delete(code); throw err; }
+  res.json({ok:true,code});
+}));
+
+app.delete('/api/packs/:id', apiAction(async (req, res) => {
   const index = packs.findIndex(pack => pack.id === req.params.id);
   if (index < 0) return res.status(404).json({ error: 'Pack not found or already deleted.' });
   const pack = packs[index];
@@ -149,7 +267,8 @@ app.delete('/api/packs/:id', (req, res) => {
     return res.status(409).json({ error: 'This pack is being used in an active game room. Finish the game before deleting it.' });
   }
   packs.splice(index, 1);
-  savePacks();
+  try { await savePacks(); } catch (err) { packs.splice(index, 0, pack); throw err; }
+  delete packStats[pack.id]; await saveStats();
   // Published studios may still be open in other tabs; update their status.
   for (const draft of drafts.values()) {
     if (draft.packId === pack.id) {
@@ -158,10 +277,10 @@ app.delete('/api/packs/:id', (req, res) => {
       broadcastDraft(draft);
     }
   }
-  saveDrafts();
+  await saveDrafts();
   // Media uploads remain untouched: the same URL may be used in another pack/draft.
   res.json({ ok: true, id: pack.id });
-});
+}));
 
 const allowedMime = {
   'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
@@ -193,7 +312,7 @@ function mediaSignatureValid(file) {
   return false;
 }
 app.post('/api/upload', (req, res) => {
-  upload.single('file')(req, res, err => {
+  upload.single('file')(req, res, async err => {
     if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'File exceeds the 40 MB upload limit.' : 'Media upload failed.' });
     if (!req.file) return res.status(400).json({ error: 'Choose a JPG, PNG, WebP, GIF, MP4, WebM or MOV file.' });
     const isVideo = req.file.mimetype.startsWith('video/');
@@ -203,12 +322,23 @@ app.post('/api/upload', (req, res) => {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: isVideo ? 'Use a valid MP4, WebM or MOV video under 40 MB.' : 'Use a valid JPG, PNG, WebP or GIF under 15 MB.' });
     }
+    if (cloud.enabled) {
+      try {
+        const url = await cloud.uploadMedia(req.file.path, req.file.filename, req.file.mimetype);
+        fs.unlinkSync(req.file.path);
+        return res.status(201).json({ url, kind: isVideo ? 'video' : 'image' });
+      } catch (uploadError) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+        console.error('Cloud media upload failed:', uploadError);
+        return res.status(502).json({ error: 'Cloud media storage failed. Try the upload again.' });
+      }
+    }
     res.status(201).json({ url: `/uploads/${req.file.filename}`, kind: isVideo ? 'video' : 'image' });
   });
 });
 app.use('/uploads', express.static(uploadsDir, { maxAge: '1d', index: false, dotfiles: 'deny' }));
 app.use(express.static(path.join(root, 'public')));
-app.get(['/room/:code', '/pack/:id', '/create', '/studio/:code'], (_req, res) => res.sendFile(path.join(root, 'public', 'index.html')));
+app.get(['/room/:code', '/pack/:id', '/create', '/studio/:code', '/profile'], (_req, res) => res.sendFile(path.join(root, 'public', 'index.html')));
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && 'body' in err) return res.status(400).json({ error: 'Invalid request data.' });
   console.error(err);
@@ -285,6 +415,7 @@ try {
 } catch { /* First launch; empty draft store. */ }
 function saveDrafts() {
   const stored = [...drafts.values()].map(({ editors, ...draft }) => draft);
+  if (cloud.enabled) return cloud.save('drafts', stored);
   const temp = `${draftsFile}.${process.pid}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(stored));
   fs.renameSync(temp, draftsFile);
@@ -296,6 +427,12 @@ function makeDraftCode() {
   while (drafts.has(code));
   return code;
 }
+app.get('/api/studios/:code/summary', (req, res) => {
+  const draft = drafts.get(safeString(req.params.code, 12).toUpperCase());
+  if (!draft) return res.status(404).json({ error: 'Studio no longer exists.' });
+  res.json({ code:draft.code, hostId:draft.hostId, title:draft.title, status:draft.status,
+    itemCount:draft.items.length, packId:draft.packId || null, updatedAt:draft.updatedAt, createdAt:draft.createdAt });
+});
 function draftState(draft) {
   return { code: draft.code, hostId: draft.hostId, status: draft.status,
     packId: draft.packId || null, title: draft.title, description: draft.description,
@@ -331,7 +468,14 @@ function studioFor(socket) {
   return draft?.editors.has(socket.data.playerId) ? draft : null;
 }
 io.on('connection', socket => {
-  socket.on('draft:create', (data, ack) => {
+  // Async storage failures must reach the caller instead of silently acknowledging unsaved data.
+  const onEvent = (name, handler) => socket.on(name, (data, ack) => {
+    Promise.resolve().then(() => handler(data, ack)).catch(err => {
+      console.error(`Socket ${name} failed:`, err);
+      error(ack, 'Could not save to storage. Please try again.');
+    });
+  });
+  onEvent('draft:create', async (data, ack) => {
     const id = safeString(data?.playerId, 80);
     const name = safeString(data?.name, 24);
     if (!id || !name) return error(ack, 'Choose a nickname first.');
@@ -341,10 +485,10 @@ io.on('connection', socket => {
       createdAt: new Date().toISOString(), updatedAt: Date.now(), editors: new Map() };
     drafts.set(code, draft);
     joinDraft(socket, draft, id, name);
-    saveDrafts();
+    await saveDrafts();
     reply(ack, { ok: true, code }); broadcastDraft(draft);
   });
-  socket.on('draft:join', (data, ack) => {
+  onEvent('draft:join', async (data, ack) => {
     const code = safeString(data?.code, 12).toUpperCase();
     const id = safeString(data?.playerId, 80);
     const name = safeString(data?.name, 24);
@@ -355,16 +499,16 @@ io.on('connection', socket => {
     joinDraft(socket, draft, id, name);
     reply(ack, { ok: true, code }); broadcastDraft(draft);
   });
-  socket.on('draft:meta', (data, ack) => {
+  onEvent('draft:meta', async (data, ack) => {
     const draft = studioFor(socket);
     if (!draft || draft.hostId !== socket.data.playerId) return error(ack, 'Only the studio creator can edit pack details.');
     if (draft.status !== 'editing') return error(ack, 'This pack is already published.');
     const field = data?.field;
     if (!['title','description','category'].includes(field)) return error(ack, 'Invalid field.');
     draft[field] = safeString(data?.value, field === 'title' ? 70 : field === 'description' ? 240 : 24);
-    saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
+    await saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
   });
-  socket.on('draft:add', (data, ack) => {
+  onEvent('draft:add', async (data, ack) => {
     const draft = studioFor(socket);
     if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
     if (draft.items.length >= MAX_PACK_ITEMS) return error(ack, `A pack can have at most ${MAX_PACK_ITEMS} contenders.`);
@@ -373,9 +517,9 @@ io.on('connection', socket => {
     entry.addedBy = socket.data.playerId;
     entry.addedByName = draft.editors.get(socket.data.playerId).name;
     draft.items.push(entry);
-    saveDrafts(); reply(ack, { ok: true, id: entry.id }); broadcastDraft(draft);
+    await saveDrafts(); reply(ack, { ok: true, id: entry.id }); broadcastDraft(draft);
   });
-  socket.on('draft:edit', (data, ack) => {
+  onEvent('draft:edit', async (data, ack) => {
     const draft = studioFor(socket);
     if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
     const entry = draft.items.find(item => item.id === data?.id);
@@ -386,18 +530,18 @@ io.on('connection', socket => {
     if (field === 'kind') entry.kind = data?.value === 'video' ? 'video' : 'image';
     else if (field === 'image') entry.image = safeMedia(data?.value);
     else entry.name = safeString(data?.value, 60);
-    saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
+    await saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
   });
-  socket.on('draft:remove', (data, ack) => {
+  onEvent('draft:remove', async (data, ack) => {
     const draft = studioFor(socket);
     if (!draft || draft.status !== 'editing') return error(ack, 'This studio is not open for editing.');
     const entry = draft.items.find(item => item.id === data?.id);
     if (!entry) return error(ack, 'Contender was removed.');
     if (entry.addedBy !== socket.data.playerId && draft.hostId !== socket.data.playerId) return error(ack, 'You can only remove your entries.');
     draft.items = draft.items.filter(item => item.id !== entry.id);
-    saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
+    await saveDrafts(); reply(ack, { ok: true }); broadcastDraft(draft);
   });
-  socket.on('draft:publish', (_data, ack) => {
+  onEvent('draft:publish', async (_data, ack) => {
     const draft = studioFor(socket);
     if (!draft || draft.hostId !== socket.data.playerId) return error(ack, 'Only the creator can publish.');
     if (draft.status !== 'editing') return error(ack, 'This pack is already published.');
@@ -408,11 +552,11 @@ io.on('connection', socket => {
     const pack = { id: crypto.randomUUID(), title: draft.title, description: draft.description,
       category: draft.category, author: draft.editors.get(draft.hostId)?.name || 'Duel Club',
       createdAt: new Date().toISOString(), items, ownerKeyHash: keyDigest(ownerKey).toString('hex') };
-    packs.push(pack); savePacks();
-    draft.packId = pack.id; draft.status = 'published'; saveDrafts();
+    packs.push(pack); await savePacks();
+    draft.packId = pack.id; draft.status = 'published'; await saveDrafts();
     reply(ack, { ok: true, packId: pack.id, ownerKey }); broadcastDraft(draft);
   });
-  socket.on('room:create', (data, ack) => {
+  onEvent('room:create', async (data, ack) => {
     const pack = packs.find(p => p.id === data?.packId);
     if (!pack) return error(ack, 'This pack no longer exists.');
     const id = safeString(data?.playerId, 80);
@@ -427,7 +571,7 @@ io.on('connection', socket => {
     reply(ack, { ok: true, code });
     broadcast(room);
   });
-  socket.on('room:join', (data, ack) => {
+  onEvent('room:join', async (data, ack) => {
     const code = safeString(data?.code, 16).toUpperCase();
     const id = safeString(data?.playerId, 80);
     const name = safeString(data?.name, 24);
@@ -441,7 +585,7 @@ io.on('connection', socket => {
     reply(ack, { ok: true, code });
     broadcast(room);
   });
-  socket.on('room:start', (_data, ack) => {
+  onEvent('room:start', async (_data, ack) => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || room.hostId !== socket.data.playerId) return error(ack, 'Only the host can start.');
     if (room.status !== 'lobby') return error(ack, 'Already started.');
@@ -450,7 +594,7 @@ io.on('connection', socket => {
     startRound(room, shuffle(pack.items));
     reply(ack, { ok: true }); broadcast(room);
   });
-  socket.on('room:vote', (data, ack) => {
+  onEvent('room:vote', async (data, ack) => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || !asSocketPlayer(socket, room)) return error(ack, 'Join the room first.');
     const match = currentMatch(room);
@@ -459,7 +603,7 @@ io.on('connection', socket => {
     match.votes[socket.data.playerId] = data.choice;
     reply(ack, { ok: true }); broadcast(room);
   });
-  socket.on('room:reveal', (_data, ack) => {
+  onEvent('room:reveal', async (_data, ack) => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || room.hostId !== socket.data.playerId) return error(ack, 'Only the host can reveal the vote.');
     if (room.status !== 'playing' || room.revealed) return error(ack, 'Not ready to reveal.');
@@ -472,14 +616,17 @@ io.on('connection', socket => {
     room.outcome = { winner, tiebreak };
     reply(ack, { ok: true }); broadcast(room);
   });
-  socket.on('room:next', (_data, ack) => {
+  onEvent('room:next', async (_data, ack) => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || room.hostId !== socket.data.playerId) return error(ack, 'Only the host can continue.');
     if (room.status !== 'playing' || !room.revealed) return error(ack, 'Reveal the result first.');
     const match = currentMatch(room);
     room.roundWinners.push(room.outcome.winner);
+    const finalMatch = room.matchIndex === room.matches.length - 1 && !room.isPreliminary && room.roundEntrants === 2;
+    const votes = score(match);
+    await recordMatch(room.packId, match, room.outcome, votes, finalMatch ? room.outcome.winner : null);
     room.history.push({ round: room.round, a: match.a, b: match.b,
-      winner: room.outcome.winner, scores: score(match) });
+      winner: room.outcome.winner, scores: votes });
     room.completed += 1;
     room.matchIndex += 1;
     room.revealed = false;
@@ -513,6 +660,41 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000).unref();
 
+// Load cloud state before accepting ANY requests. Never silently fall back to seeds if
+// the configured database is unreachable: that could overwrite existing packs.
+async function bootstrapCloud() {
+  if (!cloud.enabled) return;
+  const remote = await cloud.load();
+  if (remote.packs !== undefined) {
+    if (!Array.isArray(remote.packs)) throw new Error('Invalid Supabase packs format');
+    packs = remote.packs;
+  } else {
+    await cloud.save('packs', packs);
+  }
+  if (remote.stats !== undefined) {
+    if (!remote.stats || Array.isArray(remote.stats) || typeof remote.stats !== 'object') throw new Error('Invalid Supabase stats format');
+    packStats = remote.stats;
+  } else {
+    await cloud.save('stats', packStats);
+  }
+  if (remote.drafts !== undefined) {
+    if (!Array.isArray(remote.drafts)) throw new Error('Invalid Supabase drafts format');
+    drafts.clear();
+    for (const draft of remote.drafts) {
+      if (draft?.code && Array.isArray(draft.items)) {
+        drafts.set(draft.code, { ...draft, editors: new Map(), updatedAt: draft.updatedAt || Date.now() });
+      }
+    }
+  } else {
+    await cloud.save('drafts', [...drafts.values()].map(({ editors, ...draft }) => draft));
+  }
+  console.log(`Cloud storage ready: ${packs.length} packs, ${drafts.size} studios`);
+}
+
 const port = Number(process.env.PORT) || 3000;
-if (process.env.NODE_ENV !== 'test') server.listen(port, '0.0.0.0', () => console.log(`Duel Club running on http://localhost:${port}`));
+if (process.env.NODE_ENV !== 'test') {
+  bootstrapCloud().then(() => {
+    server.listen(port, '0.0.0.0', () => console.log(`Duel Club running on http://localhost:${port}`));
+  }).catch(err => { console.error('Startup refused: cloud storage is unavailable or misconfigured.', err); process.exit(1); });
+}
 export { app, server, io, rooms, startRound, score };
